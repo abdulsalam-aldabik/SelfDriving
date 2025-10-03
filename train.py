@@ -340,3 +340,22 @@ print("1. Review training curves and validation metrics")
 print("2. Download model or access from Google Drive")
 print("3. Use for live inference in Assetto Corsa")
 print("=" * 80)
+
+
+
+learn.show_results(max_n=6, figsize=(8,8))# ============================================================================
+# DIRECT DOWNLOAD TO LOCAL DEVICE
+# ============================================================================
+print("\n" + "=" * 80)
+print("DOWNLOADING MODEL TO LOCAL DEVICE")
+print("=" * 80)
+
+from google.colab import files
+
+# Download the main model file
+files.download(model_filename)
+print(f"✓ Downloaded {model_filename} to your Downloads folder")
+
+# Download model weights (optional)
+files.download('models/drive_model_weights.pth')
+print("✓ Downloaded model weights file")
