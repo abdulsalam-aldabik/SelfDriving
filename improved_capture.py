@@ -58,9 +58,14 @@ class Capture:
                 img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
                 img = img.resize((224, 224), Image.LANCZOS)
                 img.save(filepath)
+                
+                
+                steer = round(float(max(-1.0, min(1.0, telemetry['steer']))),1)
+                if steer == 0.0:
+                    steer = 0.0
 
-
-                steer = float(max(-1.0, min(1.0, telemetry['steer']))) + 0.0
+                
+                    
                 throttle = telemetry['throttle']
                 brake = telemetry['brake']
                 speed = telemetry['speed']
@@ -70,7 +75,7 @@ class Capture:
                     writer = csv.writer(f)
                     writer.writerow([
                         os.path.join("frames", filename),
-                        0.0 if steer == 0.0 else round(steer, 1),
+                        steer,
                         round(throttle, 1),
                         round(brake, 1),
                         round(speed, 1)

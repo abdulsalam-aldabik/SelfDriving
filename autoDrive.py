@@ -23,7 +23,7 @@ print("=" * 80)
 # CONFIGURATION
 # ============================================================================
 MODEL_WEIGHTS = 'models/drive_model_weights.pth'  # Use .pth file instead
-TARGET_FPS = 10
+TARGET_FPS = 60
 SHOW_DEBUG = True
 
 # ============================================================================
@@ -198,7 +198,7 @@ try:
             try:
                 img = capture_and_preprocess()
                 pred = learn.predict(img)
-                steer_raw, throttle_raw, brake_raw = pred[0][0], pred[0][1], pred[0][2]
+                steer_raw, throttle_raw, brake_raw = pred[0][0], 0.2, 0.0
                 steer, throttle, brake = clip_predictions(
                     float(steer_raw),
                     float(throttle_raw),
