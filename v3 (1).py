@@ -34,7 +34,10 @@ print(f"PyTorch Version: {torch.__version__}")
 if not torch.cuda.is_available():
     print("⚠️  WARNING: CUDA not detected! Training will be slow.")
     print("   Check: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
-
+# Suppress scientific notation globally
+np.set_printoptions(suppress=True, precision=1)
+pd.options.display.float_format = '{:.1f}'.format
+torch.set_printoptions(precision=1, sci_mode=False)
 # ============================================================================
 # DATA SETUP - UPDATE THESE PATHS FOR YOUR WINDOWS SYSTEM
 # ============================================================================
