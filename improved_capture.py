@@ -49,9 +49,11 @@ class Capture:
         
         # Setup CSV file with headers
         self.csv_path = os.path.join(OUTPUT_DIR, "labels.csv")
-        with open(self.csv_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['image', 'steer', 'throttle', 'brake', 'speed'])
+        file_exists = os.path.isfile(self.csv_path)
+        if not file_exists:
+            with open(self.csv_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['image', 'steer', 'throttle', 'brake', 'speed'])
     
     def read_telemetry_data(self):
         """Read telemetry data from Assetto Corsa shared memory"""

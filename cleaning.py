@@ -31,7 +31,8 @@ STRAIGHT_PERCENTAGE = 0.25  # Straight data as 25% of total dataset (recommended
 TARGET_DATASET_SIZE = None  # Set to None for dynamic calculation, or specify a number  
 
 os.makedirs(OUTPUT_FRAMES_DIR, exist_ok=True)
-
+# Check if output CSV already exists
+output_csv_exists = os.path.isfile(OUTPUT_CSV)
 
 # ============================================================================
 # STEP 1: LOAD DATA
@@ -81,10 +82,25 @@ print(f"Valid samples: {len(df_valid)}")
 # ============================================================================
 
 print("\nNormalizing speed...")
-original_speed_min = df_valid['speed'].min()
-original_speed_max = df_valid['speed'].max()
 
-print(f"Speed range: {original_speed_min:.2f} - {original_speed_max:.2f} km/h")
+normalization_file = os.path.join(OUTPUT_DIR, 'normalization_params.json')
+
+# Load existing normalization params if they exist
+if os.path.exists(normalization_file):
+    with open(normalization_file, 'r') as f:
+        normalization_params = json.load(f)
+    original_speed_min = normalization_params['speed_min']
+    original_speed_max = normalization_params['speed_max']
+    print(f"Using existing normalization: {original_speed_min:.2f} - {original_speed_max:.2f} km/h")
+else:
+    # Calculate new normalization params from current data
+    original_speed_min = df_valid['speed'].min()
+    original_speed_max = df_valid['speed'].max()
+    print(f"New speed range: {original_speed_min:.2f} - {original_speed_max:.2f} km/h")
+
+
+
+
 
 # Handle edge case of identical speeds
 if original_speed_max == original_speed_min:
@@ -100,7 +116,6 @@ normalization_params = {
     'speed_max': float(original_speed_max)
 }
 
-normalization_file = os.path.join(OUTPUT_DIR, 'normalization_params.json')
 with open(normalization_file, 'w') as f:
     json.dump(normalization_params, f, indent=4)
 
@@ -211,15 +226,27 @@ df_balanced = balance_steering_data(
 
 
 # ============================================================================
-# STEP 6: COPY IMAGES AND SAVE
+# STEP 6: COPY IMAGES AND SAVE (INCREMENTAL MODE)
 # ============================================================================
 
 print("\nCopying images to output directory...")
 cleaned_rows = []
 
+# Load existing cleaned data if it exists
+if output_csv_exists:
+    existing_cleaned = pd.read_csv(OUTPUT_CSV)
+    existing_images = set(existing_cleaned['image'].values)
+    print(f"Found {len(existing_cleaned)} existing cleaned samples")
+else:
+    existing_images = set()
+
 for idx, row in df_balanced.iterrows():
     source_path = os.path.join(INPUT_DIR, row['image'])
     dest_path = os.path.join(OUTPUT_DIR, row['image'])
+    
+    # Skip if image already exists in cleaned dataset
+    if row['image'] in existing_images:
+        continue
     
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
     
@@ -229,10 +256,20 @@ for idx, row in df_balanced.iterrows():
     except Exception:
         pass
 
-df_cleaned = pd.DataFrame(cleaned_rows)
-df_cleaned.to_csv(OUTPUT_CSV, index=False)
+df_new_cleaned = pd.DataFrame(cleaned_rows)
+
+# Append to existing CSV or create new one
+if output_csv_exists:
+    df_new_cleaned.to_csv(OUTPUT_CSV, mode='a', index=False, header=False)
+    print(f"Appended {len(df_new_cleaned)} new samples to existing cleaned data")
+else:
+    df_new_cleaned.to_csv(OUTPUT_CSV, index=False)
+    print(f"Created new cleaned dataset with {len(df_new_cleaned)} samples")
+
+# Load final combined dataset for reporting
+df_final = pd.read_csv(OUTPUT_CSV)
 
 print(f"\nCleaning complete!")
-print(f"  Input: {len(df)} samples")
-print(f"  Output: {len(df_cleaned)} samples")
+print(f"  Total cleaned samples: {len(df_final)}")
+print(f"  New samples added: {len(df_new_cleaned)}")
 print(f"  Saved to: {OUTPUT_DIR}")
