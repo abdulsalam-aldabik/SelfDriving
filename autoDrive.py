@@ -22,7 +22,7 @@ print("=" * 80)
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-MODEL_WEIGHTS = 'models/drive_model_weights.pth'  # Use .pth file instead
+MODEL_WEIGHTS = 'models/drive_model_weights_1.pth'  # Use .pth file instead
 TARGET_FPS = 60
 SHOW_DEBUG = True
 
@@ -73,7 +73,7 @@ try:
     
     # Load the saved weights (cross-platform safe)
     # Remove 'models/' and '.pth' from the path
-    learn.load('drive_model_weights')
+    learn.load('drive_model_weights_1')
     
     print(f"✓ Model weights loaded from: {MODEL_WEIGHTS}")
     

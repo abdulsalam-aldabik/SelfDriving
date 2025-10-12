@@ -1,5 +1,5 @@
 """
-Assetto Corsa Autonomous Driving - Real-Time Inference
+Assetto Corsa Autonomous Driving - Real-Time Inference (Windows)
 Uses trained fastai model with virtual Xbox 360 controller
 """
 
@@ -11,22 +11,21 @@ import win32api
 from PIL import Image
 from pathlib import Path
 import vgamepad as vg
-# from fastai.vision.all import *
 import torch
-import dill
 import warnings
 
-# ADD THIS BEFORE FASTAI IMPORT
+# CRITICAL: Fix PosixPath issue for models trained on Linux/Colab
 import pathlib
-
 temp = pathlib.PosixPath
 pathlib.PosixPath = pathlib.WindowsPath
 
 # Now import fastai
 from fastai.vision.all import *
 
-warnings.filterwarnings('ignore')
+# Restore PosixPath after import (best practice)
+pathlib.PosixPath = temp
 
+warnings.filterwarnings('ignore')
 
 print("=" * 80)
 print("ASSETTO CORSA AUTONOMOUS DRIVER")
@@ -35,27 +34,35 @@ print("=" * 80)
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-MODEL_PATH = 'drive_model_ac_optimized_2.pkl'  # Use .pkl exported model
+MODEL_PATH = 'models/drive_model_ac_optimized_cross_platform.pkl'
 TARGET_FPS = 30
 SHOW_DEBUG = True
 
 # ============================================================================
-# LOAD MODEL - METHOD 1: Using Exported Model (Recommended)
+# LOAD MODEL
 # ============================================================================
 print("\n[1/4] Loading trained model...")
 try:
-    if Path(MODEL_PATH).exists():
-        # Load complete exported model (includes transforms)
-        print(f"Loading model from: {MODEL_PATH}")
-        learn = load_learner(MODEL_PATH, cpu=not torch.cuda.is_available(), pickle_module=dill)
-        print("✓ Model loaded successfully using learn.export method")
-    else:
+    if not Path(MODEL_PATH).exists():
         raise FileNotFoundError(f"Model file not found: {MODEL_PATH}")
     
-    # Move model to GPU if available
+    print(f"Loading model from: {MODEL_PATH}")
+    
+    # Temporarily set PosixPath for loading
+    temp = pathlib.PosixPath
+    pathlib.PosixPath = pathlib.WindowsPath
+    
+    try:
+        learn = load_learner(MODEL_PATH, cpu=not torch.cuda.is_available())
+        print("✓ Model loaded successfully")
+    finally:
+        # Restore original PosixPath
+        pathlib.PosixPath = temp
+    
+    # Optimize for inference
     if torch.cuda.is_available():
         print(f"✓ Using GPU: {torch.cuda.get_device_name(0)}")
-        learn.model = learn.model.cuda()
+        learn.model.cuda()
     else:
         print("⚠ Using CPU (slower)")
     
@@ -66,69 +73,7 @@ except Exception as e:
     print(f"✗ Failed to load model: {e}")
     import traceback
     traceback.print_exc()
-    
-    # Fallback: Try loading weights only (Method 2)
-    print("\n⚠ Attempting fallback: Loading weights only...")
-    try:
-        # Recreate model architecture (MUST match training exactly)
-        class WeightedMSELoss(nn.Module):
-            def __init__(self, steer_weight=2.0, throttle_weight=1.0, brake_weight=1.0):
-                super().__init__()
-                self.steer_weight = steer_weight
-                self.throttle_weight = throttle_weight
-                self.brake_weight = brake_weight
-            
-            def forward(self, pred, target):
-                turn_intensity = 1.0 + self.steer_weight * torch.abs(target[:, 0])
-                steer_loss = turn_intensity * (pred[:, 0] - target[:, 0])**2
-                throttle_loss = self.throttle_weight * (pred[:, 1] - target[:, 1])**2
-                brake_loss = self.brake_weight * (pred[:, 2] - target[:, 2])**2
-                return (steer_loss + throttle_loss + brake_loss).mean()
-        
-        # Create dummy data for DataBlock initialization
-        dummy_img = Image.new('RGB', (224, 224))
-        dummy_img.save('temp_dummy.jpg')
-        dummy_df = pd.DataFrame({
-            'image': ['temp_dummy.jpg'],
-            'steer': [0.0],
-            'throttle': [0.0],
-            'brake': [0.0]
-        })
-        
-        # Create DataBlock (MUST match training configuration)
-        dblock = DataBlock(
-            blocks=(ImageBlock, RegressionBlock(n_out=3)),
-            get_x=ColReader('image', pref=''),
-            get_y=ColReader(['steer', 'throttle', 'brake']),
-            splitter=RandomSplitter(valid_pct=0.2, seed=42),
-            item_tfms=Resize(224),
-            batch_tfms=[Normalize.from_stats(*imagenet_stats)]
-        )
-        
-        dls = dblock.dataloaders(dummy_df, bs=1, path='.')
-        
-        # Create learner with same architecture
-        learn = vision_learner(
-            dls,
-            resnet34,
-            n_out=3,
-            loss_func=WeightedMSELoss(steer_weight=2.0),
-            metrics=[mae]
-        )
-        
-        # Load weights
-        learn.load('models/ac_drive_model_weights')
-        learn.model.eval()
-        
-        # Cleanup
-        Path('temp_dummy.jpg').unlink(missing_ok=True)
-        
-        print("✓ Fallback successful: Weights loaded")
-        
-    except Exception as e2:
-        print(f"✗ Fallback also failed: {e2}")
-        traceback.print_exc()
-        exit(1)
+    exit(1)
 
 # ============================================================================
 # SETUP VIRTUAL XBOX 360 CONTROLLER
@@ -141,7 +86,6 @@ try:
 except Exception as e:
     print(f"✗ Failed to create virtual controller: {e}")
     print("  Install ViGEmBus driver: https://github.com/ViGEm/ViGEmBus/releases")
-    print("  Then: pip install vgamepad")
     exit(1)
 
 # ============================================================================
@@ -169,12 +113,42 @@ def clip_predictions(steer, throttle, brake):
     return steer, throttle, brake
 
 def capture_and_preprocess():
-    """Capture screen and preprocess for model input"""
+    """Capture screen and convert to PIL Image"""
     screenshot = sct.grab(monitor)
     img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
-    # Resize to match training input size
-    img = img.resize((224, 224), Image.LANCZOS)
     return img
+
+def get_prediction_fast(img):
+    """
+    Fast prediction using direct model inference.
+    Bypasses DataLoader overhead for real-time performance.
+    """
+    # Convert PIL Image to tensor manually
+    img_resized = img.resize((224, 224), Image.LANCZOS)
+    img_tensor = tensor(np.array(img_resized)).permute(2, 0, 1).float() / 255.0
+    
+    # Apply ImageNet normalization (must match training)
+    mean = tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    img_tensor = (img_tensor - mean) / std
+    
+    # Add batch dimension
+    img_tensor = img_tensor.unsqueeze(0)
+    
+    # Move to GPU if available
+    if torch.cuda.is_available():
+        img_tensor = img_tensor.cuda()
+    
+    # Direct model inference (fastest method)
+    with torch.no_grad():
+        preds = learn.model(img_tensor)
+    
+    # Extract predictions
+    steer = float(preds[0, 0]) * 2.2
+    throttle = 0.2  # Your hardcoded value
+    brake = 0.0     # Your hardcoded value
+    
+    return steer, throttle, brake
 
 def send_controls_to_game(steer, throttle, brake):
     """Send control inputs to virtual Xbox 360 controller"""
@@ -196,10 +170,12 @@ def reset_controls():
 print("\n[4/4] Warming up model...")
 try:
     dummy_img = Image.new('RGB', (224, 224))
-    _ = learn.predict(dummy_img)
+    _ = get_prediction_fast(dummy_img)
     print("✓ Model warmed up and ready")
 except Exception as e:
     print(f"⚠ Warm-up warning: {e}")
+    import traceback
+    traceback.print_exc()
 
 # ============================================================================
 # MAIN INFERENCE LOOP
@@ -226,14 +202,14 @@ try:
             driving = True
             frame_count = 0
             start_time = time.time()
-            time.sleep(0.2)  # Debounce
+            time.sleep(0.2)
             
         elif keyboard.is_pressed('s') and driving:
             print("\n⏸  STOPPING autonomous driving...")
             driving = False
             reset_controls()
             print("   Controls reset to neutral")
-            time.sleep(0.2)  # Debounce
+            time.sleep(0.2)
             
         elif keyboard.is_pressed('q'):
             print("\n⏹  QUITTING...")
@@ -243,18 +219,11 @@ try:
             loop_start = time.time()
             
             try:
-                # Capture screen and run inference
+                # Capture screen
                 img = capture_and_preprocess()
                 
-                # Get prediction (returns tuple: (prediction, class_idx, probabilities))
-                with torch.no_grad():  # Disable gradient computation for inference
-                    pred_result = learn.predict(img)
-                    pred = pred_result[0]  # Extract tensor predictions
-                
-                # Extract control values
-                steer_raw = float(pred[0])
-                throttle_raw = float(pred[1])
-                brake_raw = float(pred[2])
+                # Get prediction (fast method)
+                steer_raw, throttle_raw, brake_raw = get_prediction_fast(img)
                 
                 # Clip to valid ranges
                 steer, throttle, brake = clip_predictions(steer_raw, throttle_raw, brake_raw)
@@ -284,15 +253,16 @@ try:
                     
             except Exception as e:
                 print(f"⚠ Inference error: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
         else:
-            time.sleep(0.01)  # Small sleep when not driving
+            time.sleep(0.01)
             
 except KeyboardInterrupt:
     print("\n\n⏹  Interrupted by user")
     
 finally:
-    # Cleanup
     print("\nCleaning up...")
     reset_controls()
     sct.close()
