@@ -1,0 +1,9 @@
+fastai
+pandas
+numpy
+matplotlib
+seaborn
+torch
+scikit-learn
+scipy
+json

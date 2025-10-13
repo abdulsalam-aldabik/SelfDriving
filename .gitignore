@@ -8,4 +8,6 @@ ac_screenshots/
 ac_training_data/
 /models/
 ac_training_data_cleaned/
-output
+output/
+codetxt
+photos/ 
