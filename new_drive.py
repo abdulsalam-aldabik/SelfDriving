@@ -43,12 +43,12 @@ CONSTANT_THROTTLE = 0.4  # Adjust for your car/track
                           # 0.8 = High speed
 
 # Steering control - UPDATED FOR AI DATA
-AI_MAX_STEERING = 0.6       # Maximum steering in training data
+AI_MAX_STEERING = 0.6      # Maximum steering in training data
 STEERING_MULTIPLIER = 1.0   # Start at 1.0, adjust with 'u'/'d' keys
 MAX_STEERING_CHANGE = 0.15  # Safety limit per frame
 
 # Performance
-TARGET_FPS = 10
+TARGET_FPS = 60
 SHOW_DEBUG = True
 
 print("=" * 80)
@@ -198,10 +198,12 @@ class AIDriverXbox:
         with torch.no_grad():
             preds = self.model(img_tensor)
 
-        # Extract steering (index 0)
+        # Extract all three controls
         steer_raw = float(preds[0, 0])
+        throttle_raw = float(preds[0, 1])
+        brake_raw = float(preds[0, 2])
 
-        return steer_raw
+        return steer_raw, throttle_raw, brake_raw
 
     def apply_steering_control(self, steer_raw):
         """
@@ -319,15 +321,19 @@ class AIDriverXbox:
                         # Capture screen
                         img = self.capture_and_preprocess()
 
-                        # Get raw steering prediction
-                        steer_raw = self.get_prediction_fast(img)
+                        # Get all three predictions (UNPACK THE TUPLE)
+                        steer_raw, throttle_raw, brake_raw = self.get_prediction_fast(img)
 
                         # Apply scaling and control logic (NO SMOOTHING)
                         steer_final, steer_scaled = self.apply_steering_control(steer_raw)
 
-                        # Use constant throttle, no brake
+                        # # Use constant throttle, no brake
                         throttle = self.constant_throttle
-                        brake = 0.0
+                        # brake = 0.0
+                        # Use predicted throttle and brake (apply normalization if needed)
+
+                        # throttle = np.clip(throttle_raw, 0.0, 1.0)
+                        brake = np.clip(brake_raw, 0.0, 1.0)
 
                         # Send to controller
                         self.send_controls(steer_final, throttle, brake)
@@ -340,11 +346,10 @@ class AIDriverXbox:
                             current_fps = self.frame_count / elapsed if elapsed > 0 else 0
 
                             print(f"Frame {self.frame_count:4d} | "
-                                  f"FPS: {current_fps:5.1f} | "
-                                  f"Raw: {steer_raw:+.3f} | "
-                                  f"Scaled: {steer_scaled:+.3f} | "
-                                  f"Final: {steer_final:+.3f} | "
-                                  f"Throttle: {throttle:.2f}")
+                                f"FPS: {current_fps:5.1f} | "
+                                f"Steer: {steer_final:+.3f} | "
+                                f"Throttle: {throttle:.2f} | "
+                                f"Brake: {brake:.2f}")
 
                         # Frame rate limiting
                         inference_time = time.time() - loop_start
