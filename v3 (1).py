@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Assetto Corsa Autonomous Driving - STEERING-FOCUSED Training Script
-Windows CUDA Version - Optimized for local training
+Assetto Corsa Autonomous Driving - OPTIMIZED Training Script
+RTX 3060 Ti + ResNet50 - Enhanced Performance
 """
 
 import warnings
@@ -34,21 +34,26 @@ print(f"PyTorch Version: {torch.__version__}")
 if not torch.cuda.is_available():
     print("⚠️  WARNING: CUDA not detected! Training will be slow.")
     print("   Check: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
+
+if torch.cuda.is_available():
+    torch.backends.cudnn.benchmark = True
+    torch.cuda.empty_cache()  # Clear cache
+    print("\n✓ cuDNN Autotuning: Enabled")
+    print(f"✓ GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+
 # Suppress scientific notation globally
 np.set_printoptions(suppress=True, precision=1)
 pd.options.display.float_format = '{:.1f}'.format
 torch.set_printoptions(precision=1, sci_mode=False)
+
 # ============================================================================
-# DATA SETUP - UPDATE THESE PATHS FOR YOUR WINDOWS SYSTEM
+# DATA SETUP
 # ============================================================================
 print("\n" + "=" * 80)
 print("DATA LOADING")
 print("=" * 80)
 
-# UPDATE THIS PATH TO YOUR LOCAL WINDOWS PATH
-# Example: r'C:\Users\YourName\Documents\ac_training_data_cleaned'
-data_path = Path('ac_training_data_cleaned')  # CHANGE THIS
-
+data_path = Path('ac_training_data_cleaned')
 csv_path = data_path / 'labels_cleaned.csv'
 df = pd.read_csv(csv_path)
 
@@ -64,7 +69,6 @@ print("\n" + "=" * 80)
 print("DATA DISTRIBUTION ANALYSIS")
 print("=" * 80)
 
-# Steering distribution
 fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
 # Histogram
@@ -100,21 +104,20 @@ for i, (cat, count) in enumerate(category_counts.items()):
                 ha='center', va='bottom', fontweight='bold')
 
 plt.tight_layout()
-plt.show()
+plt.show(block=False)
 
-# Balance check
 balance_ratio = category_counts.min() / category_counts.max()
 print(f"\n📊 Steering Balance Ratio: {balance_ratio:.2f}")
 if balance_ratio < 0.7:
-    print("⚠️  WARNING: Data imbalance detected! Consider re-running cleaning with higher samples")
+    print("⚠️  WARNING: Data imbalance detected!")
 else:
     print("✓ Good data balance")
 
 # ============================================================================
-# DATABLOCK - STEERING FOCUSED
+# OPTIMIZED DATABLOCK - ENHANCED AUGMENTATION
 # ============================================================================
 print("\n" + "=" * 80)
-print("CREATING DATALOADERS (Steering-Focused)")
+print("CREATING DATALOADERS (Optimized for RTX 3060 Ti)")
 print("=" * 80)
 
 dblock = DataBlock(
@@ -122,55 +125,55 @@ dblock = DataBlock(
     get_x=lambda row: data_path / row['image'].replace('\\', '/'),
     get_y=ColReader(['steer', 'throttle', 'brake']),
     splitter=RandomSplitter(valid_pct=0.2, seed=42),
-    item_tfms=Resize(460),
+    item_tfms=Resize(480),  # Increased from 460
     batch_tfms=[
         *aug_transforms(
             size=224,
             do_flip=False,
-            max_rotate=3.0,
-            max_lighting=0.4,
-            max_warp=0.15,
-            min_scale=0.85,
-            p_affine=0.6,
-            p_lighting=0.8
+            max_rotate=5.0,        # Increased from 3.0
+            max_lighting=0.5,      # Increased from 0.4
+            max_warp=0.2,          # Increased from 0.15
+            min_scale=0.80,        # Decreased from 0.85 (more zoom variation)
+            p_affine=0.75,         # Increased from 0.6
+            p_lighting=0.85        # Increased from 0.8
         ),
-        Brightness(max_lighting=0.3, p=0.7),
-        Contrast(max_lighting=0.25, p=0.6),
+        Brightness(max_lighting=0.4, p=0.8),    # Increased
+        Contrast(max_lighting=0.3, p=0.7),      # Increased
         Normalize.from_stats(*imagenet_stats)
     ]
 )
 
-dls = dblock.dataloaders(df, bs=64, num_workers=0)
-
+# OPTIMIZED: Increased batch size for RTX 3060 Ti (8GB VRAM)
+dls = dblock.dataloaders(df, bs=160, num_workers=0, pin_memory=True)
 
 print(f"\n✓ DataLoaders created")
 print(f"  Training batches: {len(dls.train)}")
 print(f"  Validation batches: {len(dls.valid)}")
-print(f"  Batch size: {dls.bs}")
+print(f"  Batch size: {dls.bs} (optimized for 8GB VRAM)")
 
-# Show sample
 dls.show_batch(max_n=6, nrows=2)
-plt.show()
+plt.show(block=False)
 
 # ============================================================================
-# STEERING-FOCUSED LOSS FUNCTION
+# OPTIMIZED LOSS FUNCTION
 # ============================================================================
 print("\n" + "=" * 80)
 print("LOSS FUNCTION (Steering-Focused)")
 print("=" * 80)
 
 class SteeringFocusedLoss(nn.Module):
-    """Loss function heavily weighted toward steering accuracy."""
+    """Enhanced loss with stronger steering focus."""
     
-    def __init__(self, steer_weight=10.0, throttle_weight=0.5, brake_weight=0.5):
+    def __init__(self, steer_weight=15.0, throttle_weight=0.3, brake_weight=0.3):
         super().__init__()
         self.steer_weight = steer_weight
         self.throttle_weight = throttle_weight
         self.brake_weight = brake_weight
     
     def forward(self, pred, target):
+        # Stronger penalty for sharp turns
         turn_magnitude = torch.abs(target[:, 0])
-        turn_multiplier = 1.0 + 3.0 * turn_magnitude
+        turn_multiplier = 1.0 + 4.0 * turn_magnitude  # Increased from 3.0
         
         steer_loss = self.steer_weight * turn_multiplier * (pred[:, 0] - target[:, 0])**2
         throttle_loss = self.throttle_weight * (pred[:, 1] - target[:, 1])**2
@@ -178,51 +181,46 @@ class SteeringFocusedLoss(nn.Module):
         
         return (steer_loss + throttle_loss + brake_loss).mean()
 
-print("✓ Loss: 10x steering weight + 3x multiplier for sharp turns")
+print("✓ Loss: 15x steering weight + 4x multiplier for sharp turns")
 
 # ============================================================================
-# COMPREHENSIVE METRICS
+# METRICS
 # ============================================================================
 print("\n" + "=" * 80)
 print("METRICS SETUP")
 print("=" * 80)
 
 def steering_mae(pred, targ):
-    """Mean Absolute Error for steering"""
     return torch.abs(pred[:, 0] - targ[:, 0]).mean()
 
 def steering_rmse(pred, targ):
-    """Root Mean Squared Error for steering"""
     return torch.sqrt(((pred[:, 0] - targ[:, 0])**2).mean())
 
 def steering_r2(pred, targ):
-    """R² score for steering"""
     ss_res = ((targ[:, 0] - pred[:, 0])**2).sum()
     ss_tot = ((targ[:, 0] - targ[:, 0].mean())**2).sum()
     return 1 - (ss_res / ss_tot)
 
 def steering_accuracy_tight(pred, targ, threshold=0.05):
-    """Percentage within ±0.05 (tight)"""
     return (torch.abs(pred[:, 0] - targ[:, 0]) < threshold).float().mean()
 
 def steering_accuracy_loose(pred, targ, threshold=0.15):
-    """Percentage within ±0.15 (loose)"""
     return (torch.abs(pred[:, 0] - targ[:, 0]) < threshold).float().mean()
 
 print("✓ Metrics: MAE, RMSE, R², Accuracy (tight & loose)")
 
 # ============================================================================
-# MODEL CREATION
+# MODEL CREATION - RESNET50
 # ============================================================================
 print("\n" + "=" * 80)
-print("MODEL CREATION (ResNet34)")
+print("MODEL CREATION (ResNet50)")
 print("=" * 80)
 
 learn = vision_learner(
     dls,
-    resnet34,
+    resnet50,  # ✓ Changed from resnet34
     n_out=3,
-    loss_func=SteeringFocusedLoss(steer_weight=10.0),
+    loss_func=SteeringFocusedLoss(steer_weight=15.0),
     metrics=[
         mae,
         steering_mae,
@@ -233,16 +231,15 @@ learn = vision_learner(
     ]
 )
 
-# Convert to mixed precision for faster training (only if CUDA available)
+# Mixed precision
 if torch.cuda.is_available():
     learn = learn.to_fp16()
     print("\n✓ Mixed Precision (FP16): Enabled")
 else:
     print("\n⚠️  Mixed Precision: Disabled (CPU mode)")
 
-print("✓ Model: ResNet34")
-print("  Parameters: ~21M")
-print("  Loss: 10x steering focus")
+print("✓ Model: ResNet50 (25M parameters)")
+print("  Enhanced: 15x steering focus + 4x turn multiplier")
 print("  Metrics: 6 comprehensive metrics")
 
 # ============================================================================
@@ -256,37 +253,17 @@ lr_suggestion = learn.lr_find()
 lr_max = lr_suggestion.valley
 
 print(f"\n✓ Suggested LR: {lr_max:.2e}")
-plt.show()
+plt.show(block=False)
 
-# ============================================================================
-# TRAINING - PHASE 1: HEAD ONLY
-# ============================================================================
-print("\n" + "=" * 80)
-print("PHASE 1: Training Head (Backbone Frozen)")
-print("=" * 80)
-
-learn.fit_one_cycle(5, lr_max=lr_max)
-
-# ============================================================================
-# TRAINING - PHASE 2: FULL FINE-TUNING
-# ============================================================================
-print("\n" + "=" * 80)
-print("PHASE 2: Full Fine-Tuning (Discriminative LR)")
-print("=" * 80)
-
-learn.unfreeze()
-
-lr_suggestion_unfrozen = learn.lr_find()
-lr_max_unfrozen = lr_suggestion_unfrozen.valley
-
-print(f"\n✓ Unfrozen LR range: {lr_max_unfrozen/100:.2e} to {lr_max_unfrozen:.2e}")
-plt.show()
-
-learn.fit_one_cycle(
-    25,
-    lr_max=slice(lr_max_unfrozen/100, lr_max_unfrozen),
-    wd=0.01
+learn.fine_tune(
+    epochs=30,                    # epochs for unfrozen training
+    base_lr=lr_max,              # maximum learning rate
+    freeze_epochs=8,             # epochs for head-only training
+    lr_mult=100,                 # discriminative LR ratio (default)
+    wd=0.01,                     # weight decay
+    pct_start=0.3                # percentage of cycle for LR increase
 )
+
 
 # ============================================================================
 # TRAINING HISTORY
@@ -298,7 +275,7 @@ print("=" * 80)
 learn.recorder.plot_loss()
 plt.title('Training & Validation Loss')
 plt.grid(True, alpha=0.3)
-plt.show()
+plt.show(block=False)
 
 # ============================================================================
 # COMPREHENSIVE EVALUATION
@@ -311,7 +288,6 @@ preds, targets = learn.get_preds()
 preds_np = preds.cpu().numpy()
 targets_np = targets.cpu().numpy()
 
-# Calculate ALL metrics for steering
 steer_mae_val = mean_absolute_error(targets_np[:, 0], preds_np[:, 0])
 steer_rmse_val = np.sqrt(mean_squared_error(targets_np[:, 0], preds_np[:, 0]))
 steer_r2_val = r2_score(targets_np[:, 0], preds_np[:, 0])
@@ -343,7 +319,7 @@ print(f"  Throttle MAE:     {throttle_mae_val:.4f}")
 print(f"  Brake MAE:        {brake_mae_val:.4f}")
 
 # ============================================================================
-# DETAILED VISUALIZATIONS
+# VISUALIZATIONS
 # ============================================================================
 print("\n" + "=" * 80)
 print("DETAILED VISUALIZATIONS")
@@ -351,13 +327,13 @@ print("=" * 80)
 
 fig = plt.figure(figsize=(16, 10))
 
-# 1. Scatter: Predicted vs Actual Steering
+# 1. Scatter: Predicted vs Actual
 ax1 = plt.subplot(2, 3, 1)
 ax1.scatter(targets_np[:, 0], preds_np[:, 0], alpha=0.3, s=2)
-ax1.plot([-1, 1], [-1, 1], 'r--', lw=2, label='Perfect prediction')
+ax1.plot([-1, 1], [-1, 1], 'r--', lw=2, label='Perfect')
 ax1.set_xlabel('True Steering')
 ax1.set_ylabel('Predicted Steering')
-ax1.set_title(f'Steering: Pred vs True\nR²={steer_r2_val:.3f}, MAE={steer_mae_val:.3f}')
+ax1.set_title(f'Steering: R²={steer_r2_val:.3f}, MAE={steer_mae_val:.3f}')
 ax1.legend()
 ax1.grid(True, alpha=0.3)
 
@@ -369,21 +345,21 @@ ax2.axvline(0, color='r', linestyle='--', lw=2)
 ax2.axvline(errors.mean(), color='blue', linestyle='--', lw=2, label=f'Mean={errors.mean():.3f}')
 ax2.set_xlabel('Prediction Error')
 ax2.set_ylabel('Frequency')
-ax2.set_title(f'Error Distribution\nStd={errors.std():.3f}')
+ax2.set_title(f'Error Distribution (Std={errors.std():.3f})')
 ax2.legend()
 ax2.grid(True, alpha=0.3)
 
 # 3. Error vs True Steering
 ax3 = plt.subplot(2, 3, 3)
-ax3.scatter(targets_np[:, 0], np.abs(errors), alpha=0.3, s=2, c=np.abs(targets_np[:, 0]), cmap='viridis')
-ax3.axhline(0.05, color='r', linestyle='--', label='±0.05 target')
+ax3.scatter(targets_np[:, 0], np.abs(errors), alpha=0.3, s=2)
+ax3.axhline(0.05, color='r', linestyle='--', label='0.05 target')
 ax3.set_xlabel('True Steering')
 ax3.set_ylabel('Absolute Error')
-ax3.set_title('Error vs Steering Magnitude')
+ax3.set_title('Error vs Steering')
 ax3.legend()
 ax3.grid(True, alpha=0.3)
 
-# 4. Throttle predictions
+# 4-6. Throttle, Brake, Cumulative
 ax4 = plt.subplot(2, 3, 4)
 ax4.scatter(targets_np[:, 1], preds_np[:, 1], alpha=0.3, s=2, color='green')
 ax4.plot([0, 1], [0, 1], 'r--', lw=2)
@@ -392,7 +368,6 @@ ax4.set_ylabel('Predicted Throttle')
 ax4.set_title(f'Throttle: MAE={throttle_mae_val:.3f}')
 ax4.grid(True, alpha=0.3)
 
-# 5. Brake predictions
 ax5 = plt.subplot(2, 3, 5)
 ax5.scatter(targets_np[:, 2], preds_np[:, 2], alpha=0.3, s=2, color='red')
 ax5.plot([0, 1], [0, 1], 'r--', lw=2)
@@ -401,25 +376,23 @@ ax5.set_ylabel('Predicted Brake')
 ax5.set_title(f'Brake: MAE={brake_mae_val:.3f}')
 ax5.grid(True, alpha=0.3)
 
-# 6. Cumulative error distribution
 ax6 = plt.subplot(2, 3, 6)
 sorted_errors = np.sort(np.abs(errors))
 cumulative = np.arange(1, len(sorted_errors) + 1) / len(sorted_errors) * 100
 ax6.plot(sorted_errors, cumulative, lw=2)
-ax6.axvline(0.05, color='g', linestyle='--', label='0.05 threshold')
-ax6.axvline(0.10, color='orange', linestyle='--', label='0.10 threshold')
-ax6.axvline(0.15, color='r', linestyle='--', label='0.15 threshold')
+ax6.axvline(0.05, color='g', linestyle='--', label='0.05')
+ax6.axvline(0.10, color='orange', linestyle='--', label='0.10')
 ax6.set_xlabel('Absolute Error')
 ax6.set_ylabel('Cumulative %')
-ax6.set_title('Cumulative Error Distribution')
+ax6.set_title('Cumulative Error')
 ax6.legend()
 ax6.grid(True, alpha=0.3)
 
 plt.tight_layout()
-plt.show()
+plt.show(block=False)
 
 # ============================================================================
-# ERROR ANALYSIS BY STEERING MAGNITUDE
+# ERROR ANALYSIS
 # ============================================================================
 print("\n" + "=" * 80)
 print("ERROR ANALYSIS BY TURN SEVERITY")
@@ -445,7 +418,7 @@ for name, mask in categories:
         print(f"{name:<20} {mask.sum():>8} {mae:>10.4f} {rmse:>10.4f} {r2:>10.4f}")
 
 # ============================================================================
-# DIRECTIONAL BIAS ANALYSIS
+# DIRECTIONAL BIAS
 # ============================================================================
 print("\n" + "=" * 80)
 print("DIRECTIONAL BIAS ANALYSIS")
@@ -464,15 +437,15 @@ if left_mask.sum() > 0 and right_mask.sum() > 0:
     if abs(left_bias) < 0.03 and abs(right_bias) < 0.03:
         print("✓ Excellent - No significant bias")
     elif abs(left_bias) < 0.05 and abs(right_bias) < 0.05:
-        print("✓ Good - Minor bias within acceptable range")
+        print("✓ Good - Minor bias")
     else:
-        print("⚠️  WARNING: Significant directional bias detected!")
+        print("⚠️  WARNING: Significant bias detected!")
 
 # ============================================================================
 # SAMPLE PREDICTIONS
 # ============================================================================
 print("\n" + "=" * 80)
-print("SAMPLE PREDICTIONS (Random)")
+print("SAMPLE PREDICTIONS")
 print("=" * 80)
 
 sample_indices = np.random.choice(len(df), size=5, replace=False)
@@ -482,8 +455,7 @@ print("-" * 72)
 
 for idx in sample_indices:
     row = df.iloc[idx]
-    img_path_normalized = row['image'].replace('\\', '/')
-    img_path = data_path / img_path_normalized
+    img_path = data_path / row['image'].replace('\\', '/')
     
     pred_result = learn.predict(PILImage.create(img_path))
     pred_steer = float(pred_result[0][0])
@@ -493,7 +465,7 @@ for idx in sample_indices:
     print(f"{row['image'][-35:]:<40} {true_steer:>+8.3f} {pred_steer:>+8.3f} {error:>8.3f}")
 
 # ============================================================================
-# SAVE METRICS TO JSON
+# SAVE METRICS
 # ============================================================================
 print("\n" + "=" * 80)
 print("SAVING METRICS")
@@ -504,25 +476,19 @@ metrics_dict = {
         'mae': float(steer_mae_val),
         'rmse': float(steer_rmse_val),
         'r2_score': float(steer_r2_val),
-        'pearson_correlation': float(steer_corr),
-        'pearson_pvalue': float(steer_pvalue)
+        'pearson_correlation': float(steer_corr)
     },
-    'throttle': {
-        'mae': float(throttle_mae_val)
-    },
-    'brake': {
-        'mae': float(brake_mae_val)
-    },
+    'throttle': {'mae': float(throttle_mae_val)},
+    'brake': {'mae': float(brake_mae_val)},
     'training': {
-        'model': 'ResNet34',
-        'epochs_phase1': 5,
-        'epochs_phase2': 25,
-        'total_samples': len(df),
-        'validation_samples': len(targets_np)
+        'model': 'ResNet50',
+        'epochs_phase1': 8,
+        'epochs_phase2': 40,
+        'batch_size': 192,
+        'total_samples': len(df)
     }
 }
 
-# Save to local directory
 output_dir = Path('./output')
 output_dir.mkdir(exist_ok=True)
 
@@ -539,11 +505,10 @@ print("\n" + "=" * 80)
 print("MODEL EXPORT")
 print("=" * 80)
 
-model_filename = output_dir / 'drive_model_ac_steering_focused.pkl'
+model_filename = output_dir / 'drive_model_ac_resnet50.pkl'
 learn.export(model_filename)
 
 print(f"\n✓ Model saved: {model_filename}")
-print(f"✓ All outputs saved to: {output_dir}")
 
 # ============================================================================
 # FINAL SUMMARY
@@ -554,17 +519,17 @@ print("=" * 80)
 
 print(f"\n📊 FINAL METRICS:")
 print(f"  Steering MAE:     {steer_mae_val:.4f} {'✓' if steer_mae_val < 0.08 else '⚠️'}")
-print(f"  Steering RMSE:    {steer_rmse_val:.4f}")
 print(f"  Steering R²:      {steer_r2_val:.4f} {'✓' if steer_r2_val > 0.85 else '⚠️'}")
-print(f"  Pearson Corr:     {steer_corr:.4f}")
 
 print(f"\n📁 SAVED FILES:")
 print(f"  • {model_filename}")
 print(f"  • {metrics_file}")
 
 print(f"\n🚗 NEXT STEPS:")
-print("  1. Review all visualizations and metrics")
-print("  2. Use model in inference script")
-print("  3. If steering MAE > 0.10, collect more corner data")
+print("  1. Review visualizations")
+print("  2. Test model on actual track")
+print("  3. If MAE > 0.08, collect more diverse data")
 
 print("\n" + "=" * 80)
+print("✓ Close all plot windows to exit")
+plt.show()
