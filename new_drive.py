@@ -2,7 +2,7 @@
 Assetto Corsa AI Driver - Xbox 360 Controller with Constant Throttle
 Model predicts steering only, throttle is constant
 Uses virtual Xbox 360 controller (vgamepad/ViGEmBus)
-WITH STEERING SCALING FIX FOR AI-TRAINED DATA
+Direct model output - No steering modifications
 """
 
 import mss
@@ -42,10 +42,6 @@ CONSTANT_THROTTLE = 0.4  # Adjust for your car/track
                           # 0.6 = Medium speed
                           # 0.8 = High speed
 
-# Steering control - UPDATED FOR AI DATA
-AI_MAX_STEERING = 0.6      # Maximum steering in training data
-STEERING_MULTIPLIER = 1.0   # Start at 1.0, adjust with 'u'/'d' keys
-MAX_STEERING_CHANGE = 0.15  # Safety limit per frame
 
 # Performance
 TARGET_FPS = 60
@@ -124,26 +120,6 @@ monitor = {
 }
 print(f"✓ Screen capture ready: {monitor['width']}x{monitor['height']}")
 
-# ============================================================================
-# STEERING SCALING FUNCTIONS
-# ============================================================================
-
-def scale_steering(model_output, ai_max=0.6):
-    """
-    Scale AI steering range [0, 0.6] to full range [0, 1.0]
-    
-    Args:
-        model_output: Raw model prediction (trained on 0-0.6 range)
-        ai_max: Maximum steering value in training data (default 0.6)
-    
-    Returns:
-        Scaled steering value in full [-1.0, 1.0] range
-    """
-    # Scale from AI range to full range
-    scaled = model_output / ai_max
-    
-    # Clamp to valid range
-    return np.clip(scaled, -1.0, 1.0)
 
 # ============================================================================
 # AI DRIVER CLASS
@@ -157,15 +133,13 @@ class AIDriverXbox:
         self.gamepad = gamepad
         self.constant_throttle = constant_throttle
 
-        # Control state
-        self.prev_steer = 0.0
 
         # Statistics
         self.frame_count = 0
         self.total_time = 0.0
 
         print(f"✓ AI Driver initialized (throttle: {constant_throttle:.2f})")
-        print(f"✓ Steering scaling: AI range [0, {AI_MAX_STEERING}] → Full range [0, 1.0]")
+
 
     def capture_and_preprocess(self):
         """Capture screen and convert to PIL Image"""
@@ -176,7 +150,7 @@ class AIDriverXbox:
     def get_prediction_fast(self, img):
         """
         Fast prediction using direct model inference.   
-        Returns steering only (throttle/brake ignored).
+        Returns steering, throttle, and brake predictions.
         """
         # Resize and convert to tensor
         img_resized = img.resize((224, 224), Image.LANCZOS)
@@ -199,35 +173,13 @@ class AIDriverXbox:
             preds = self.model(img_tensor)
 
         # Extract all three controls
-        steer_raw = float(preds[0, 0])
-        throttle_raw = float(preds[0, 1])
-        brake_raw = float(preds[0, 2])
+        steer = float(preds[0, 0])
+        throttle = float(preds[0, 1])
+        brake = float(preds[0, 2])
 
-        return steer_raw, throttle_raw, brake_raw
 
-    def apply_steering_control(self, steer_raw):
-        """
-        Apply scaling, multiplier, and safety limits to steering
-        NO SMOOTHING (as requested)
-        """
-        # Step 1: Scale from AI range [0, 0.6] to full range [0, 1.0]
-        steer_scaled = scale_steering(steer_raw, ai_max=AI_MAX_STEERING)
-        
-        # Step 2: Apply user multiplier
-        steer_adjusted = steer_scaled * STEERING_MULTIPLIER
-        
-        # Step 3: Apply maximum change limit (safety)
-        steer_change = steer_adjusted - self.prev_steer
-        if abs(steer_change) > MAX_STEERING_CHANGE:
-            steer_final = self.prev_steer + np.sign(steer_change) * MAX_STEERING_CHANGE
-        else:
-            steer_final = steer_adjusted
-        
-        # Step 4: Clamp to valid range
-        steer_final = np.clip(steer_final, -1.0, 1.0)
-        
-        self.prev_steer = steer_final
-        return steer_final, steer_scaled
+        return steer, throttle, brake
+
 
     def send_controls(self, steer, throttle, brake):
         """Send controls to Xbox 360 controller"""
@@ -248,11 +200,11 @@ class AIDriverXbox:
         self.gamepad.right_trigger_float(value_float=0.0)
         self.gamepad.left_trigger_float(value_float=0.0)
         self.gamepad.update()
-        self.prev_steer = 0.0
+
 
     def run(self):
         """Main inference loop"""
-        global STEERING_MULTIPLIER
+
 
         print("\n" + "=" * 80)
         print("CONTROLS")
@@ -262,8 +214,6 @@ class AIDriverXbox:
         print("  'q' - QUIT program")
         print("  '+' - Increase throttle (+0.05)")
         print("  '-' - Decrease throttle (-0.05)")
-        print("  'u' - Increase steering multiplier (+0.1)")
-        print("  'd' - Decrease steering multiplier (-0.1)")
         print("=" * 80)
         print("\n⏸  Waiting for command... (Press 'a' to start)")
 
@@ -276,8 +226,6 @@ class AIDriverXbox:
                 if keyboard.is_pressed('a') and not driving:
                     print("\n▶  STARTING autonomous driving...")
                     print(f"   Throttle: {self.constant_throttle:.2f}")
-                    print(f"   Steering multiplier: {STEERING_MULTIPLIER:.1f}")
-                    print(f"   Steering scaling: {AI_MAX_STEERING} → 1.0")
                     driving = True
                     self.frame_count = 0
                     start_time = time.time()
@@ -304,15 +252,6 @@ class AIDriverXbox:
                     print(f"\nThrottle: {self.constant_throttle:.2f}")
                     time.sleep(0.2)
 
-                elif keyboard.is_pressed('u'):
-                    STEERING_MULTIPLIER = min(3.0, STEERING_MULTIPLIER + 0.1)
-                    print(f"\nSteering multiplier: {STEERING_MULTIPLIER:.1f}")
-                    time.sleep(0.2)
-
-                elif keyboard.is_pressed('d'):
-                    STEERING_MULTIPLIER = max(0.1, STEERING_MULTIPLIER - 0.1)
-                    print(f"\nSteering multiplier: {STEERING_MULTIPLIER:.1f}")
-                    time.sleep(0.2)
 
                 if driving:
                     loop_start = time.time()
@@ -321,22 +260,19 @@ class AIDriverXbox:
                         # Capture screen
                         img = self.capture_and_preprocess()
 
-                        # Get all three predictions (UNPACK THE TUPLE)
-                        steer_raw, throttle_raw, brake_raw = self.get_prediction_fast(img)
 
-                        # Apply scaling and control logic (NO SMOOTHING)
-                        steer_final, steer_scaled = self.apply_steering_control(steer_raw)
+                        # Get predictions
+                        steer, throttle_pred, brake = self.get_prediction_fast(img)
 
-                        # # Use constant throttle, no brake
+
+                        # Use constant throttle, use predicted brake
                         throttle = self.constant_throttle
-                        # brake = 0.0
-                        # Use predicted throttle and brake (apply normalization if needed)
+                        brake = np.clip(brake, 0.0, 1.0)
 
-                        # throttle = np.clip(throttle_raw, 0.0, 1.0)
-                        brake = np.clip(brake_raw, 0.0, 1.0)
 
                         # Send to controller
-                        self.send_controls(steer_final, throttle, brake)
+                        self.send_controls(steer, throttle, brake)
+
 
                         self.frame_count += 1
 
@@ -347,7 +283,7 @@ class AIDriverXbox:
 
                             print(f"Frame {self.frame_count:4d} | "
                                 f"FPS: {current_fps:5.1f} | "
-                                f"Steer: {steer_final:+.3f} | "
+                                f"Steer: {steer:+.3f} | "
                                 f"Throttle: {throttle:.2f} | "
                                 f"Brake: {brake:.2f}")
 
