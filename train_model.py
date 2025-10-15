@@ -26,6 +26,7 @@ from sklearn.metrics import (
 )
 from scipy.stats import pearsonr
 import json
+from fastai.metrics import mae, rmse, R2Score
 
 sns.set_style("whitegrid")
 
@@ -203,42 +204,26 @@ print(f"  Batch size: {dls.bs}")
 # METRICS - STEERING ONLY
 # ============================================================================
 
-def steering_mae(pred, targ):
-    if pred.dim() == 2:
-        pred = pred.squeeze(1)
-    if targ.dim() == 2:
-        targ = targ.squeeze(1)
-    return torch.abs(pred - targ).mean()
+# 1. MAE - Built-in (Mean Absolute Error)
+# Already handles flattening automatically
+steering_mae = mae
 
-def steering_rmse(pred, targ):
-    if pred.dim() == 2:
-        pred = pred.squeeze(1)
-    if targ.dim() == 2:
-        targ = targ.squeeze(1)
-    return torch.sqrt(((pred - targ)**2).mean())
+# 2. RMSE - Built-in (Root Mean Squared Error)
+# Already handles flattening automatically
+steering_rmse = rmse
 
-def steering_r2(pred, targ):
-    if pred.dim() == 2:
-        pred = pred.squeeze(1)
-    if targ.dim() == 2:
-        targ = targ.squeeze(1)
-    ss_res = ((targ - pred)**2).sum()
-    ss_tot = ((targ - targ.mean())**2).sum()
-    return 1 - (ss_res / ss_tot)
+# 3. R² - Built-in
+# Already handles flattening automatically
+steering_r2 = R2Score()
+def steering_accuracy_tight(pred, targ):
+    """Percentage of predictions within ±0.05 of target"""
+    pred, targ = flatten_check(pred, targ)
+    return (torch.abs(pred - targ) < 0.05).float().mean()
 
-def steering_accuracy_tight(pred, targ, threshold=0.05):
-    if pred.dim() == 2:
-        pred = pred.squeeze(1)
-    if targ.dim() == 2:
-        targ = targ.squeeze(1)
-    return (torch.abs(pred - targ) < threshold).float().mean()
-
-def steering_accuracy_loose(pred, targ, threshold=0.15):
-    if pred.dim() == 2:
-        pred = pred.squeeze(1)
-    if targ.dim() == 2:
-        targ = targ.squeeze(1)
-    return (torch.abs(pred - targ) < threshold).float().mean()
+def steering_accuracy_loose(pred, targ):
+    """Percentage of predictions within ±0.15 of target"""
+    pred, targ = flatten_check(pred, targ)
+    return (torch.abs(pred - targ) < 0.15).float().mean()
 
 # ============================================================================
 # MODEL CREATION WITH FASTAI'S MSELossFlat
