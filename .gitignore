@@ -11,3 +11,9 @@ ac_training_data_cleaned/
 output/
 codetxt/
 phptos/
+Archive/
+yolo/
+runs/
+yolo_traffic_signs/
+old/
+*.pt

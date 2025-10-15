@@ -1,9 +1,10 @@
 """
 Data Cleaning and Balancing Script
-- Removes duplicates and invalid images
+- Validates images
 - Balances steering distribution (left/straight/right)
 - Normalizes speed values to [0, 1] range
 - Saves normalization parameters for inference
+- Supports incremental mode (appending to existing cleaned data)
 """
 
 import pandas as pd
@@ -27,7 +28,7 @@ OUTPUT_CSV = os.path.join(OUTPUT_DIR, "labels_cleaned.csv")
 
 # Balancing parameters
 STEERING_THRESHOLD = 0.05  # Angle threshold for "straight" driving
-STRAIGHT_PERCENTAGE = 0.25  # Straight data as 25% of total dataset (recommended: 20-30%)
+STRAIGHT_PERCENTAGE = 0.15  # Straight data as 25% of total dataset (recommended: 20-30%)
 TARGET_DATASET_SIZE = None  # Set to None for dynamic calculation, or specify a number  
 
 os.makedirs(OUTPUT_FRAMES_DIR, exist_ok=True)
@@ -44,25 +45,13 @@ print(f"Original dataset: {len(df)} samples")
 
 
 # ============================================================================
-# STEP 2: REMOVE DUPLICATES
-# ============================================================================
-
-print("\nRemoving duplicates...")
-df_no_duplicates = df.drop_duplicates(
-    subset=['steer', 'throttle', 'brake', 'speed'],
-    keep='first'
-)
-print(f"Removed {len(df) - len(df_no_duplicates)} duplicates")
-
-
-# ============================================================================
-# STEP 3: VALIDATE IMAGE FILES
+# STEP 2: VALIDATE IMAGE FILES
 # ============================================================================
 
 print("\nValidating images...")
 valid_samples = []
 
-for idx, row in df_no_duplicates.iterrows():
+for idx, row in df.iterrows():
     image_path = os.path.join(INPUT_DIR, row['image'])
     
     if os.path.exists(image_path):
@@ -73,12 +62,12 @@ for idx, row in df_no_duplicates.iterrows():
         except:
             pass
 
-df_valid = df_no_duplicates.loc[valid_samples].reset_index(drop=True)
+df_valid = df.loc[valid_samples].reset_index(drop=True)
 print(f"Valid samples: {len(df_valid)}")
 
 
 # ============================================================================
-# STEP 4: NORMALIZE SPEED
+# STEP 3: NORMALIZE SPEED
 # ============================================================================
 
 print("\nNormalizing speed...")
@@ -97,10 +86,6 @@ else:
     original_speed_min = df_valid['speed'].min()
     original_speed_max = df_valid['speed'].max()
     print(f"New speed range: {original_speed_min:.2f} - {original_speed_max:.2f} km/h")
-
-
-
-
 
 # Handle edge case of identical speeds
 if original_speed_max == original_speed_min:
@@ -123,7 +108,7 @@ print(f"Normalization params saved to: {normalization_file}")
 
 
 # ============================================================================
-# STEP 5: BALANCE STEERING DATA
+# STEP 4: BALANCE STEERING DATA
 # ============================================================================
 
 def balance_steering_data(df, threshold, straight_percentage=0.25, target_size=None):
@@ -224,9 +209,8 @@ df_balanced = balance_steering_data(
 )
 
 
-
 # ============================================================================
-# STEP 6: COPY IMAGES AND SAVE (INCREMENTAL MODE)
+# STEP 5: COPY IMAGES AND SAVE (INCREMENTAL MODE)
 # ============================================================================
 
 print("\nCopying images to output directory...")

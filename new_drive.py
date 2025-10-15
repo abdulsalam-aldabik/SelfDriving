@@ -33,7 +33,7 @@ warnings.filterwarnings('ignore')
 # CONFIGURATION
 # ============================================================================
 
-MODEL_PATH = 'models/drive_model_ac_steering_focused.pkl'
+MODEL_PATH = 'models/steering_model_resnet50.pkl'
 NORMALIZATION_PARAMS_PATH = "models/normalization_params.json"
 
 # CONSTANT THROTTLE SETTING
@@ -44,7 +44,7 @@ CONSTANT_THROTTLE = 0.4  # Adjust for your car/track
 
 
 # Performance
-TARGET_FPS = 60
+TARGET_FPS = 30
 SHOW_DEBUG = True
 
 print("=" * 80)
@@ -175,7 +175,8 @@ class AIDriverXbox:
         # Extract all three controls
         steer = float(preds[0, 0])
         throttle = float(preds[0, 1])
-        brake = float(preds[0, 2])
+        brake = 0.0
+        # float(preds[0, 2])
 
 
         return steer, throttle, brake

@@ -21,7 +21,7 @@ import win32api
 
 OUTPUT_DIR = "ac_training_data"
 FRAMES_DIR = os.path.join(OUTPUT_DIR, "frames")
-CAPTURE_FPS = 30
+CAPTURE_FPS = 10
 CAPTURE_DELAY = 1.0 / CAPTURE_FPS
 
 os.makedirs(FRAMES_DIR, exist_ok=True)
@@ -128,7 +128,7 @@ class Capture:
 # ============================================================================
 
 def main():
-    print("Press 'c' to start/stop capture, 'q' to quit")
+    print("Press 'w' to start/stop capture, 'q' to quit")
     
     capture = Capture()
     
@@ -146,11 +146,11 @@ def main():
     try:
         while True:
             # Toggle capture on 'c' press
-            if keyboard.is_pressed('c') and not capturing:
+            if keyboard.is_pressed('w') and not capturing:
                 print("Capture started...")
                 capturing = True
                 time.sleep(0.2)
-            elif keyboard.is_pressed('c') and capturing:
+            elif keyboard.is_pressed('w') and capturing:
                 print(f"Capture paused. Frames captured: {frame_count}")
                 capturing = False
                 time.sleep(0.2)

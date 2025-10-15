@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Assetto Corsa Autonomous Driving - OPTIMIZED Training Script
-RTX 3060 Ti + ResNet50 - Enhanced Performance
+Assetto Corsa Autonomous Driving - STEERING ONLY
+Pure steering regression model with 5-category comprehensive analysis
 """
 
 import warnings
@@ -19,7 +19,11 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import (
+    confusion_matrix, classification_report,
+    roc_curve, auc, precision_recall_curve,
+    mean_absolute_error, mean_squared_error, r2_score
+)
 from scipy.stats import pearsonr
 import json
 
@@ -28,23 +32,17 @@ sns.set_style("whitegrid")
 # GPU Check
 print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU ONLY!'}")
 print(f"CUDA Available: {torch.cuda.is_available()}")
-print(f"CUDA Version: {torch.version.cuda if torch.cuda.is_available() else 'N/A'}")
 print(f"PyTorch Version: {torch.__version__}")
-
-if not torch.cuda.is_available():
-    print("⚠️  WARNING: CUDA not detected! Training will be slow.")
-    print("   Check: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
 
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
-    torch.cuda.empty_cache()  # Clear cache
-    print("\n✓ cuDNN Autotuning: Enabled")
+    torch.cuda.empty_cache()
     print(f"✓ GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
-# Suppress scientific notation globally
-np.set_printoptions(suppress=True, precision=1)
-pd.options.display.float_format = '{:.1f}'.format
-torch.set_printoptions(precision=1, sci_mode=False)
+# Suppress scientific notation
+np.set_printoptions(suppress=True, precision=4)
+pd.options.display.float_format = '{:.4f}'.format
+torch.set_printoptions(precision=4, sci_mode=False)
 
 # ============================================================================
 # DATA SETUP
@@ -58,171 +56,239 @@ csv_path = data_path / 'labels_cleaned.csv'
 df = pd.read_csv(csv_path)
 
 print(f"\n✓ Dataset loaded: {len(df)} samples")
-print(f"\nData columns: {list(df.columns)}")
 print(f"\nStatistics:")
 print(df[['steer', 'throttle', 'brake', 'speed']].describe())
 
 # ============================================================================
-# DATA ANALYSIS
+# DATA VALIDATION
 # ============================================================================
 print("\n" + "=" * 80)
-print("DATA DISTRIBUTION ANALYSIS")
+print("DATA DISTRIBUTION VALIDATION")
 print("=" * 80)
 
-fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+# Check steering range
+print(f"\nSteering value range:")
+print(f"  Min: {df['steer'].min():.4f}")
+print(f"  Max: {df['steer'].max():.4f}")
+print(f"  Mean: {df['steer'].mean():.4f}")
+print(f"  Std: {df['steer'].std():.4f}")
 
-# Histogram
+# Check straight vs turn distribution
+straight_threshold = 0.05
+straight_count = ((df['steer'].abs() <= straight_threshold).sum())
+turn_count = len(df) - straight_count
+straight_pct = straight_count / len(df) * 100
+
+print(f"\nStraight vs Turn (threshold ±{straight_threshold}):")
+print(f"  Straight: {straight_count} ({straight_pct:.2f}%)")
+print(f"  Turns: {turn_count} ({100-straight_pct:.2f}%)")
+
+if straight_pct > 25.0:
+    print(f"\n⚠️  WARNING: Straight data >{25}%! Model will likely fail.")
+    print(f"  Recommendation: Re-run cleaning with STRAIGHT_PERCENTAGE = 0.15")
+elif straight_pct > 20.0:
+    print(f"\n⚠️  CAUTION: Straight data is high. Monitor for straight bias.")
+else:
+    print(f"\n✓ Straight percentage is acceptable.")
+
+# ============================================================================
+# STEERING CLASSIFICATION CATEGORIES (5 CLASSES)
+# ============================================================================
+print("\n" + "=" * 80)
+print("STEERING CATEGORIZATION (5 Classes)")
+print("=" * 80)
+
+# 5-category classification with balanced thresholds
+def categorize_steering(steer_value):
+    """Convert continuous steering to 5 categories"""
+    if steer_value < -0.25:
+        return 0  # Sharp Left
+    elif steer_value < -0.05:
+        return 1  # Left
+    elif steer_value <= 0.05:
+        return 2  # Straight
+    elif steer_value <= 0.25:
+        return 3  # Right
+    else:
+        return 4  # Sharp Right
+
+# Add category column
+df['steer_category'] = df['steer'].apply(categorize_steering)
+
+# Category names for visualization
+category_names = ['Sharp Left', 'Left', 'Straight', 'Right', 'Sharp Right']
+category_colors = ['#d62728', '#ff7f0e', '#2ca02c', '#1f77b4', '#9467bd']
+
+# Display distribution
+print("\nSteering Category Distribution:")
+for i, name in enumerate(category_names):
+    count = (df['steer_category'] == i).sum()
+    percentage = count / len(df) * 100
+    print(f"  {i} - {name:12s}: {count:6d} ({percentage:5.2f}%)")
+
+# Visualization
+fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+
+# Histogram with category boundaries
 axes[0].hist(df['steer'], bins=50, edgecolor='black', alpha=0.7, color='steelblue')
-axes[0].axvline(-0.05, color='r', linestyle='--', label='Threshold')
-axes[0].axvline(0.05, color='r', linestyle='--')
-axes[0].set_xlabel('Steering Angle')
-axes[0].set_ylabel('Frequency')
-axes[0].set_title('Steering Distribution')
+axes[0].axvline(-0.25, color='red', linestyle='--', linewidth=2, label='Category Boundaries')
+axes[0].axvline(-0.05, color='red', linestyle='--', linewidth=2)
+axes[0].axvline(0.05, color='red', linestyle='--', linewidth=2)
+axes[0].axvline(0.25, color='red', linestyle='--', linewidth=2)
+axes[0].set_xlabel('Steering Angle', fontsize=12)
+axes[0].set_ylabel('Frequency', fontsize=12)
+axes[0].set_title('Steering Distribution with Category Boundaries', fontsize=14, fontweight='bold')
 axes[0].legend()
 axes[0].grid(True, alpha=0.3)
 
-# Speed vs Steering
-axes[1].scatter(df['speed'], np.abs(df['steer']), alpha=0.3, s=1)
-axes[1].set_xlabel('Speed (normalized)')
-axes[1].set_ylabel('Abs(Steering)')
-axes[1].set_title('Steering vs Speed')
-axes[1].grid(True, alpha=0.3)
+# Bar chart
+category_counts = df['steer_category'].value_counts().sort_index()
+bars = axes[1].bar(range(5), category_counts.values, color=category_colors, edgecolor='black', linewidth=1.5)
+axes[1].set_xticks(range(5))
+axes[1].set_xticklabels(category_names, rotation=45, ha='right')
+axes[1].set_ylabel('Count', fontsize=12)
+axes[1].set_title('Steering Category Distribution', fontsize=14, fontweight='bold')
+axes[1].grid(True, alpha=0.3, axis='y')
 
-# Steering categories
-df['steer_category'] = pd.cut(df['steer'],
-                               bins=[-1.0, -0.05, 0.05, 1.0],
-                               labels=['Left', 'Straight', 'Right'])
-category_counts = df['steer_category'].value_counts()
-axes[2].bar(category_counts.index, category_counts.values, color=['red', 'gray', 'blue'])
-axes[2].set_xlabel('Direction')
-axes[2].set_ylabel('Count')
-axes[2].set_title('Steering Balance')
-axes[2].grid(True, alpha=0.3)
-
-for i, (cat, count) in enumerate(category_counts.items()):
-    axes[2].text(i, count + 50, f'{count}\n({count/len(df)*100:.1f}%)',
-                ha='center', va='bottom', fontweight='bold')
+# Add count labels on bars
+for i, (bar, count) in enumerate(zip(bars, category_counts.values)):
+    height = bar.get_height()
+    axes[1].text(bar.get_x() + bar.get_width()/2., height,
+                f'{count}\n({count/len(df)*100:.1f}%)',
+                ha='center', va='bottom', fontweight='bold', fontsize=9)
 
 plt.tight_layout()
+plt.savefig('output/steering_categories.png', dpi=150, bbox_inches='tight')
+print("\n✓ Saved: output/steering_categories.png")
 plt.show(block=False)
-
-balance_ratio = category_counts.min() / category_counts.max()
-print(f"\n📊 Steering Balance Ratio: {balance_ratio:.2f}")
-if balance_ratio < 0.7:
-    print("⚠️  WARNING: Data imbalance detected!")
-else:
-    print("✓ Good data balance")
+plt.close()
 
 # ============================================================================
-# OPTIMIZED DATABLOCK - ENHANCED AUGMENTATION
+# DATABLOCK SETUP - STEERING ONLY
 # ============================================================================
 print("\n" + "=" * 80)
-print("CREATING DATALOADERS (Optimized for RTX 3060 Ti)")
+print("CREATING DATALOADERS (STEERING ONLY)")
 print("=" * 80)
 
 dblock = DataBlock(
-    blocks=(ImageBlock, RegressionBlock(n_out=3)),
+    blocks=(ImageBlock, RegressionBlock(n_out=1)),  # Single output for steering
     get_x=lambda row: data_path / row['image'].replace('\\', '/'),
-    get_y=ColReader(['steer', 'throttle', 'brake']),
+    get_y=lambda row: row['steer'],  # Only return steering
     splitter=RandomSplitter(valid_pct=0.2, seed=42),
-    item_tfms=Resize(480),  # Increased from 460
+    item_tfms=Resize(480),
     batch_tfms=[
         *aug_transforms(
             size=224,
             do_flip=False,
-            max_rotate=5.0,        # Increased from 3.0
-            max_lighting=0.5,      # Increased from 0.4
-            max_warp=0.2,          # Increased from 0.15
-            min_scale=0.80,        # Decreased from 0.85 (more zoom variation)
-            p_affine=0.75,         # Increased from 0.6
-            p_lighting=0.85        # Increased from 0.8
+            max_rotate=10.0,
+            max_lighting=0.9,
+            max_warp=0.35,
+            min_scale=0.60,
+            p_affine=0.85,
+            p_lighting=0.90
         ),
-        Brightness(max_lighting=0.4, p=0.8),    # Increased
-        Contrast(max_lighting=0.3, p=0.7),      # Increased
+        Brightness(max_lighting=0.5, p=0.9),
+        Contrast(max_lighting=0.4, p=0.8),
         Normalize.from_stats(*imagenet_stats)
     ]
 )
 
-# OPTIMIZED: Increased batch size for RTX 3060 Ti (8GB VRAM)
-dls = dblock.dataloaders(df, bs=160, num_workers=0, pin_memory=True)
+dls = dblock.dataloaders(df, bs=32, num_workers=0, pin_memory=True)
 
 print(f"\n✓ DataLoaders created")
 print(f"  Training batches: {len(dls.train)}")
 print(f"  Validation batches: {len(dls.valid)}")
-print(f"  Batch size: {dls.bs} (optimized for 8GB VRAM)")
-
-dls.show_batch(max_n=6, nrows=2)
-plt.show(block=False)
+print(f"  Batch size: {dls.bs}")
 
 # ============================================================================
-# OPTIMIZED LOSS FUNCTION
+# LOSS FUNCTION - PURE STEERING
 # ============================================================================
-print("\n" + "=" * 80)
-print("LOSS FUNCTION (Steering-Focused)")
-print("=" * 80)
 
-class SteeringFocusedLoss(nn.Module):
-    """Enhanced loss with stronger steering focus."""
-    
-    def __init__(self, steer_weight=15.0, throttle_weight=0.3, brake_weight=0.3):
+class PureSteeringLoss(nn.Module):
+    """Pure steering loss with turn emphasis"""
+
+    def __init__(self, base_weight=1.0):
         super().__init__()
-        self.steer_weight = steer_weight
-        self.throttle_weight = throttle_weight
-        self.brake_weight = brake_weight
-    
+        self.base_weight = base_weight
+
     def forward(self, pred, target):
-        # Stronger penalty for sharp turns
-        turn_magnitude = torch.abs(target[:, 0])
-        turn_multiplier = 1.0 + 4.0 * turn_magnitude  # Increased from 3.0
+        # Ensure correct shapes
+        if pred.dim() == 2:
+            pred = pred.squeeze(1)
+        if target.dim() == 2:
+            target = target.squeeze(1)
         
-        steer_loss = self.steer_weight * turn_multiplier * (pred[:, 0] - target[:, 0])**2
-        throttle_loss = self.throttle_weight * (pred[:, 1] - target[:, 1])**2
-        brake_loss = self.brake_weight * (pred[:, 2] - target[:, 2])**2
+        # Calculate error
+        error = pred - target
         
-        return (steer_loss + throttle_loss + brake_loss).mean()
-
-print("✓ Loss: 15x steering weight + 4x multiplier for sharp turns")
+        # Turn magnitude emphasis (more weight on larger steering angles)
+        turn_magnitude = torch.abs(target)
+        turn_multiplier = 1.0 + 2.0 * turn_magnitude  # Max 3x weight
+        
+        # MSE loss with turn emphasis
+        loss = self.base_weight * turn_multiplier * (error ** 2)
+        
+        return loss.mean()
 
 # ============================================================================
-# METRICS
+# METRICS - STEERING ONLY
 # ============================================================================
-print("\n" + "=" * 80)
-print("METRICS SETUP")
-print("=" * 80)
 
 def steering_mae(pred, targ):
-    return torch.abs(pred[:, 0] - targ[:, 0]).mean()
+    if pred.dim() == 2:
+        pred = pred.squeeze(1)
+    if targ.dim() == 2:
+        targ = targ.squeeze(1)
+    return torch.abs(pred - targ).mean()
 
 def steering_rmse(pred, targ):
-    return torch.sqrt(((pred[:, 0] - targ[:, 0])**2).mean())
+    if pred.dim() == 2:
+        pred = pred.squeeze(1)
+    if targ.dim() == 2:
+        targ = targ.squeeze(1)
+    return torch.sqrt(((pred - targ)**2).mean())
 
 def steering_r2(pred, targ):
-    ss_res = ((targ[:, 0] - pred[:, 0])**2).sum()
-    ss_tot = ((targ[:, 0] - targ[:, 0].mean())**2).sum()
+    if pred.dim() == 2:
+        pred = pred.squeeze(1)
+    if targ.dim() == 2:
+        targ = targ.squeeze(1)
+    ss_res = ((targ - pred)**2).sum()
+    ss_tot = ((targ - targ.mean())**2).sum()
     return 1 - (ss_res / ss_tot)
 
 def steering_accuracy_tight(pred, targ, threshold=0.05):
-    return (torch.abs(pred[:, 0] - targ[:, 0]) < threshold).float().mean()
+    if pred.dim() == 2:
+        pred = pred.squeeze(1)
+    if targ.dim() == 2:
+        targ = targ.squeeze(1)
+    return (torch.abs(pred - targ) < threshold).float().mean()
 
 def steering_accuracy_loose(pred, targ, threshold=0.15):
-    return (torch.abs(pred[:, 0] - targ[:, 0]) < threshold).float().mean()
-
-print("✓ Metrics: MAE, RMSE, R², Accuracy (tight & loose)")
+    if pred.dim() == 2:
+        pred = pred.squeeze(1)
+    if targ.dim() == 2:
+        targ = targ.squeeze(1)
+    return (torch.abs(pred - targ) < threshold).float().mean()
 
 # ============================================================================
-# MODEL CREATION - RESNET50
+# MODEL CREATION
 # ============================================================================
 print("\n" + "=" * 80)
-print("MODEL CREATION (ResNet50)")
+print("MODEL CREATION (ResNet50 - STEERING ONLY)")
 print("=" * 80)
 
+# Create output directory
+output_dir = Path('./output')
+output_dir.mkdir(exist_ok=True)
+
+# Create learner for steering only
 learn = vision_learner(
     dls,
-    resnet50,  # ✓ Changed from resnet34
-    n_out=3,
-    loss_func=SteeringFocusedLoss(steer_weight=15.0),
+    resnet50,
+    n_out=1,  # Single output for steering
+    loss_func=PureSteeringLoss(base_weight=1.0),
     metrics=[
-        mae,
         steering_mae,
         steering_rmse,
         steering_r2,
@@ -231,19 +297,18 @@ learn = vision_learner(
     ]
 )
 
-# Mixed precision
 if torch.cuda.is_available():
     learn = learn.to_fp16()
     print("\n✓ Mixed Precision (FP16): Enabled")
 else:
     print("\n⚠️  Mixed Precision: Disabled (CPU mode)")
 
-print("✓ Model: ResNet50 (25M parameters)")
-print("  Enhanced: 15x steering focus + 4x turn multiplier")
-print("  Metrics: 6 comprehensive metrics")
+print("✓ Model: ResNet50")
+print("✓ Output: Steering ONLY (single value)")
+print("✓ Loss: Pure steering with turn emphasis")
 
 # ============================================================================
-# LEARNING RATE FINDER
+# TRAINING
 # ============================================================================
 print("\n" + "=" * 80)
 print("LEARNING RATE FINDER")
@@ -252,247 +317,383 @@ print("=" * 80)
 lr_suggestion = learn.lr_find()
 lr_max = lr_suggestion.valley
 
-print(f"\n✓ Suggested LR: {lr_max:.2e}")
+# Safety check for learning rate
+if lr_max > 0.01:
+    print(f"\n⚠️  Suggested LR ({lr_max:.2e}) seems high, using conservative 5e-3")
+    lr_max = 5e-3
+else:
+    print(f"\n✓ Suggested LR: {lr_max:.2e}")
+
+plt.savefig('output/lr_finder.png', dpi=150, bbox_inches='tight')
 plt.show(block=False)
+plt.close()
 
-learn.fine_tune(
-    epochs=30,                    # epochs for unfrozen training
-    base_lr=lr_max,              # maximum learning rate
-    freeze_epochs=8,             # epochs for head-only training
-    lr_mult=100,                 # discriminative LR ratio (default)
-    wd=0.01,                     # weight decay
-    pct_start=0.3                # percentage of cycle for LR increase
-)
-
-
-# ============================================================================
-# TRAINING HISTORY
-# ============================================================================
 print("\n" + "=" * 80)
-print("TRAINING HISTORY")
+print("TRAINING")
 print("=" * 80)
 
+learn.fine_tune(
+    epochs=30,
+    base_lr=lr_max,
+    freeze_epochs=8,
+    wd=0.02,
+    pct_start=0.3
+)
+
+# Save training history
 learn.recorder.plot_loss()
-plt.title('Training & Validation Loss')
+plt.title('Training & Validation Loss (Steering Only)', fontsize=14, fontweight='bold')
 plt.grid(True, alpha=0.3)
+plt.savefig('output/training_loss.png', dpi=150, bbox_inches='tight')
 plt.show(block=False)
+plt.close()
 
 # ============================================================================
-# COMPREHENSIVE EVALUATION
+# GET PREDICTIONS
 # ============================================================================
 print("\n" + "=" * 80)
-print("COMPREHENSIVE MODEL EVALUATION")
+print("GENERATING PREDICTIONS")
 print("=" * 80)
 
 preds, targets = learn.get_preds()
-preds_np = preds.cpu().numpy()
-targets_np = targets.cpu().numpy()
+preds_np = preds.cpu().numpy().squeeze()  # Remove extra dimensions
+targets_np = targets.cpu().numpy().squeeze()
 
-steer_mae_val = mean_absolute_error(targets_np[:, 0], preds_np[:, 0])
-steer_rmse_val = np.sqrt(mean_squared_error(targets_np[:, 0], preds_np[:, 0]))
-steer_r2_val = r2_score(targets_np[:, 0], preds_np[:, 0])
-steer_corr, steer_pvalue = pearsonr(targets_np[:, 0], preds_np[:, 0])
+# Convert predictions to categories
+pred_categories = np.array([categorize_steering(s) for s in preds_np])
+true_categories = np.array([categorize_steering(s) for s in targets_np])
 
-print(f"\n📊 STEERING METRICS:")
+print(f"\n✓ Generated {len(preds_np)} predictions")
+print(f"✓ Converted to 5 steering categories")
+
+# ============================================================================
+# REGRESSION METRICS
+# ============================================================================
+print("\n" + "=" * 80)
+print("REGRESSION METRICS (Steering)")
+print("=" * 80)
+
+steer_mae_val = mean_absolute_error(targets_np, preds_np)
+steer_rmse_val = np.sqrt(mean_squared_error(targets_np, preds_np))
+steer_r2_val = r2_score(targets_np, preds_np)
+steer_corr, steer_pvalue = pearsonr(targets_np, preds_np)
+
+print(f"\nSteering Regression Metrics:")
 print(f"  MAE:              {steer_mae_val:.4f}")
 print(f"  RMSE:             {steer_rmse_val:.4f}")
 print(f"  R² Score:         {steer_r2_val:.4f}")
 print(f"  Pearson Corr:     {steer_corr:.4f} (p={steer_pvalue:.2e})")
 
-print(f"\n🎯 MODEL QUALITY ASSESSMENT:")
-if steer_mae_val < 0.05 and steer_r2_val > 0.92:
-    print("  ★★★★★ EXCELLENT - Production ready!")
-elif steer_mae_val < 0.08 and steer_r2_val > 0.88:
-    print("  ★★★★☆ VERY GOOD - Should work well")
-elif steer_mae_val < 0.12 and steer_r2_val > 0.80:
-    print("  ★★★☆☆ GOOD - Acceptable performance")
-elif steer_mae_val < 0.18 and steer_r2_val > 0.70:
-    print("  ★★☆☆☆ FAIR - Needs improvement")
+# Quality assessment
+if steer_mae_val < 0.06:
+    print("\n✓ EXCELLENT: MAE < 0.06")
+elif steer_mae_val < 0.08:
+    print("\n✓ GOOD: MAE < 0.08")
+elif steer_mae_val < 0.10:
+    print("\n⚠️  ACCEPTABLE: MAE < 0.10")
 else:
-    print("  ★☆☆☆☆ POOR - Collect more data and retrain")
-
-throttle_mae_val = mean_absolute_error(targets_np[:, 1], preds_np[:, 1])
-brake_mae_val = mean_absolute_error(targets_np[:, 2], preds_np[:, 2])
-
-print(f"\n📊 OTHER OUTPUTS:")
-print(f"  Throttle MAE:     {throttle_mae_val:.4f}")
-print(f"  Brake MAE:        {brake_mae_val:.4f}")
+    print("\n⚠️  POOR: MAE > 0.10 - Model needs improvement")
 
 # ============================================================================
-# VISUALIZATIONS
+# CONFUSION MATRIX (5 CLASSES)
 # ============================================================================
 print("\n" + "=" * 80)
-print("DETAILED VISUALIZATIONS")
+print("CONFUSION MATRIX (5-Class Steering)")
 print("=" * 80)
 
-fig = plt.figure(figsize=(16, 10))
+cm = confusion_matrix(true_categories, pred_categories)
 
-# 1. Scatter: Predicted vs Actual
-ax1 = plt.subplot(2, 3, 1)
-ax1.scatter(targets_np[:, 0], preds_np[:, 0], alpha=0.3, s=2)
-ax1.plot([-1, 1], [-1, 1], 'r--', lw=2, label='Perfect')
-ax1.set_xlabel('True Steering')
-ax1.set_ylabel('Predicted Steering')
-ax1.set_title(f'Steering: R²={steer_r2_val:.3f}, MAE={steer_mae_val:.3f}')
-ax1.legend()
-ax1.grid(True, alpha=0.3)
+# Calculate accuracy
+classification_accuracy = np.trace(cm) / np.sum(cm)
+print(f"\nClassification Accuracy: {classification_accuracy:.4f} ({classification_accuracy*100:.2f}%)")
 
-# 2. Error distribution
-ax2 = plt.subplot(2, 3, 2)
-errors = preds_np[:, 0] - targets_np[:, 0]
-ax2.hist(errors, bins=50, edgecolor='black', alpha=0.7, color='coral')
-ax2.axvline(0, color='r', linestyle='--', lw=2)
-ax2.axvline(errors.mean(), color='blue', linestyle='--', lw=2, label=f'Mean={errors.mean():.3f}')
-ax2.set_xlabel('Prediction Error')
-ax2.set_ylabel('Frequency')
-ax2.set_title(f'Error Distribution (Std={errors.std():.3f})')
-ax2.legend()
-ax2.grid(True, alpha=0.3)
+# Detailed classification report
+print("\nClassification Report:")
+print(classification_report(true_categories, pred_categories, 
+                          target_names=category_names, digits=4))
 
-# 3. Error vs True Steering
-ax3 = plt.subplot(2, 3, 3)
-ax3.scatter(targets_np[:, 0], np.abs(errors), alpha=0.3, s=2)
-ax3.axhline(0.05, color='r', linestyle='--', label='0.05 target')
-ax3.set_xlabel('True Steering')
-ax3.set_ylabel('Absolute Error')
-ax3.set_title('Error vs Steering')
-ax3.legend()
-ax3.grid(True, alpha=0.3)
+# Visualize confusion matrix
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
-# 4-6. Throttle, Brake, Cumulative
-ax4 = plt.subplot(2, 3, 4)
-ax4.scatter(targets_np[:, 1], preds_np[:, 1], alpha=0.3, s=2, color='green')
-ax4.plot([0, 1], [0, 1], 'r--', lw=2)
-ax4.set_xlabel('True Throttle')
-ax4.set_ylabel('Predicted Throttle')
-ax4.set_title(f'Throttle: MAE={throttle_mae_val:.3f}')
-ax4.grid(True, alpha=0.3)
+# Raw counts
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+            xticklabels=category_names, yticklabels=category_names,
+            cbar_kws={'label': 'Count'}, ax=axes[0], square=True)
+axes[0].set_xlabel('Predicted Category', fontsize=12, fontweight='bold')
+axes[0].set_ylabel('True Category', fontsize=12, fontweight='bold')
+axes[0].set_title(f'Confusion Matrix (Counts)\nAccuracy: {classification_accuracy:.4f}', 
+                 fontsize=14, fontweight='bold')
 
-ax5 = plt.subplot(2, 3, 5)
-ax5.scatter(targets_np[:, 2], preds_np[:, 2], alpha=0.3, s=2, color='red')
-ax5.plot([0, 1], [0, 1], 'r--', lw=2)
-ax5.set_xlabel('True Brake')
-ax5.set_ylabel('Predicted Brake')
-ax5.set_title(f'Brake: MAE={brake_mae_val:.3f}')
-ax5.grid(True, alpha=0.3)
-
-ax6 = plt.subplot(2, 3, 6)
-sorted_errors = np.sort(np.abs(errors))
-cumulative = np.arange(1, len(sorted_errors) + 1) / len(sorted_errors) * 100
-ax6.plot(sorted_errors, cumulative, lw=2)
-ax6.axvline(0.05, color='g', linestyle='--', label='0.05')
-ax6.axvline(0.10, color='orange', linestyle='--', label='0.10')
-ax6.set_xlabel('Absolute Error')
-ax6.set_ylabel('Cumulative %')
-ax6.set_title('Cumulative Error')
-ax6.legend()
-ax6.grid(True, alpha=0.3)
+# Normalized (percentages)
+cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+sns.heatmap(cm_normalized, annot=True, fmt='.2%', cmap='Greens',
+            xticklabels=category_names, yticklabels=category_names,
+            cbar_kws={'label': 'Percentage'}, ax=axes[1], square=True)
+axes[1].set_xlabel('Predicted Category', fontsize=12, fontweight='bold')
+axes[1].set_ylabel('True Category', fontsize=12, fontweight='bold')
+axes[1].set_title('Confusion Matrix (Normalized)', fontsize=14, fontweight='bold')
 
 plt.tight_layout()
+plt.savefig('output/confusion_matrix.png', dpi=150, bbox_inches='tight')
+print("\n✓ Saved: output/confusion_matrix.png")
 plt.show(block=False)
+plt.close()
 
 # ============================================================================
-# ERROR ANALYSIS
+# ROC CURVES (One-vs-Rest for each category)
 # ============================================================================
 print("\n" + "=" * 80)
-print("ERROR ANALYSIS BY TURN SEVERITY")
+print("ROC CURVES (One-vs-Rest)")
 print("=" * 80)
 
-abs_steer = np.abs(targets_np[:, 0])
+# Convert categories to one-hot encoding for ROC analysis
+from sklearn.preprocessing import label_binarize
+true_categories_bin = label_binarize(true_categories, classes=range(5))
 
-categories = [
-    ('Straight (<0.1)', abs_steer < 0.1),
-    ('Gentle (0.1-0.3)', (abs_steer >= 0.1) & (abs_steer < 0.3)),
-    ('Moderate (0.3-0.6)', (abs_steer >= 0.3) & (abs_steer < 0.6)),
-    ('Sharp (>0.6)', abs_steer >= 0.6)
-]
+# Calculate "soft" probabilities based on regression predictions
+category_centers = np.array([-0.5, -0.15, 0.0, 0.15, 0.5])
 
-print(f"\n{'Category':<20} {'Count':>8} {'MAE':>10} {'RMSE':>10} {'R²':>10}")
-print("-" * 62)
+def calculate_soft_probabilities(pred_values, centers):
+    """Convert regression predictions to pseudo-probabilities for each class"""
+    pred_values = np.clip(pred_values, -1, 1)
+    distances = np.abs(pred_values[:, np.newaxis] - centers[np.newaxis, :])
+    sigma = 0.15  # Bandwidth parameter
+    weights = np.exp(-distances**2 / (2 * sigma**2))
+    probabilities = weights / weights.sum(axis=1, keepdims=True)
+    return probabilities
 
-for name, mask in categories:
+pred_probabilities = calculate_soft_probabilities(preds_np, category_centers)
+
+# Calculate ROC curve and AUC for each class
+fpr = dict()
+tpr = dict()
+roc_auc = dict()
+
+for i in range(5):
+    fpr[i], tpr[i], _ = roc_curve(true_categories_bin[:, i], pred_probabilities[:, i])
+    roc_auc[i] = auc(fpr[i], tpr[i])
+
+# Compute micro-average ROC curve and AUC
+fpr["micro"], tpr["micro"], _ = roc_curve(true_categories_bin.ravel(), 
+                                           pred_probabilities.ravel())
+roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
+
+# Plot ROC curves
+fig, ax = plt.subplots(figsize=(10, 8))
+
+# Plot micro-average
+ax.plot(fpr["micro"], tpr["micro"],
+        label=f'Micro-average (AUC = {roc_auc["micro"]:.4f})',
+        color='deeppink', linestyle=':', linewidth=3)
+
+# Plot each class
+for i, (name, color) in enumerate(zip(category_names, category_colors)):
+    ax.plot(fpr[i], tpr[i], color=color, lw=2.5,
+            label=f'{name} (AUC = {roc_auc[i]:.4f})')
+
+# Plot diagonal
+ax.plot([0, 1], [0, 1], 'k--', lw=2, label='Random Classifier')
+
+ax.set_xlim([0.0, 1.0])
+ax.set_ylim([0.0, 1.05])
+ax.set_xlabel('False Positive Rate', fontsize=12, fontweight='bold')
+ax.set_ylabel('True Positive Rate', fontsize=12, fontweight='bold')
+ax.set_title('ROC Curves - Steering Classification (One-vs-Rest)', 
+            fontsize=14, fontweight='bold')
+ax.legend(loc="lower right", fontsize=9)
+ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('output/roc_curves.png', dpi=150, bbox_inches='tight')
+print("\n✓ Saved: output/roc_curves.png")
+
+# Print AUC scores
+print("\nAUC Scores:")
+print(f"  Micro-average: {roc_auc['micro']:.4f}")
+for i, name in enumerate(category_names):
+    print(f"  {name:15s}: {roc_auc[i]:.4f}")
+
+plt.show(block=False)
+plt.close()
+
+# ============================================================================
+# PRECISION-RECALL CURVES
+# ============================================================================
+print("\n" + "=" * 80)
+print("PRECISION-RECALL CURVES")
+print("=" * 80)
+
+precision = dict()
+recall = dict()
+pr_auc = dict()
+
+for i in range(5):
+    precision[i], recall[i], _ = precision_recall_curve(
+        true_categories_bin[:, i], pred_probabilities[:, i])
+    pr_auc[i] = auc(recall[i], precision[i])
+
+# Micro-average
+precision["micro"], recall["micro"], _ = precision_recall_curve(
+    true_categories_bin.ravel(), pred_probabilities.ravel())
+pr_auc["micro"] = auc(recall["micro"], precision["micro"])
+
+# Plot Precision-Recall curves
+fig, ax = plt.subplots(figsize=(10, 8))
+
+# Plot micro-average
+ax.plot(recall["micro"], precision["micro"],
+        label=f'Micro-average (AUC = {pr_auc["micro"]:.4f})',
+        color='deeppink', linestyle=':', linewidth=3)
+
+# Plot each class
+for i, (name, color) in enumerate(zip(category_names, category_colors)):
+    ax.plot(recall[i], precision[i], color=color, lw=2.5,
+            label=f'{name} (AUC = {pr_auc[i]:.4f})')
+
+ax.set_xlim([0.0, 1.0])
+ax.set_ylim([0.0, 1.05])
+ax.set_xlabel('Recall', fontsize=12, fontweight='bold')
+ax.set_ylabel('Precision', fontsize=12, fontweight='bold')
+ax.set_title('Precision-Recall Curves - Steering Classification', 
+            fontsize=14, fontweight='bold')
+ax.legend(loc="lower left", fontsize=9)
+ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('output/precision_recall_curves.png', dpi=150, bbox_inches='tight')
+print("\n✓ Saved: output/precision_recall_curves.png")
+
+# Print PR AUC scores
+print("\nPrecision-Recall AUC Scores:")
+print(f"  Micro-average: {pr_auc['micro']:.4f}")
+for i, name in enumerate(category_names):
+    print(f"  {name:15s}: {pr_auc[i]:.4f}")
+
+plt.show(block=False)
+plt.close()
+
+# ============================================================================
+# REGRESSION VISUALIZATION
+# ============================================================================
+print("\n" + "=" * 80)
+print("REGRESSION VISUALIZATIONS")
+print("=" * 80)
+
+fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+
+# 1. Predicted vs Actual
+ax = axes[0, 0]
+scatter = ax.scatter(targets_np, preds_np, c=true_categories, 
+                    cmap='viridis', alpha=0.4, s=10, edgecolors='none')
+ax.plot([-1, 1], [-1, 1], 'r--', lw=2.5, label='Perfect Prediction')
+ax.set_xlabel('True Steering', fontsize=11, fontweight='bold')
+ax.set_ylabel('Predicted Steering', fontsize=11, fontweight='bold')
+ax.set_title(f'Predicted vs True Steering\nR² = {steer_r2_val:.4f}, MAE = {steer_mae_val:.4f}',
+            fontsize=12, fontweight='bold')
+ax.legend(fontsize=9)
+ax.grid(True, alpha=0.3)
+cbar = plt.colorbar(scatter, ax=ax)
+cbar.set_label('True Category', fontsize=10)
+
+# 2. Error Distribution
+ax = axes[0, 1]
+errors = preds_np - targets_np
+ax.hist(errors, bins=60, edgecolor='black', alpha=0.7, color='coral')
+ax.axvline(0, color='red', linestyle='--', lw=2.5, label='Zero Error')
+ax.axvline(errors.mean(), color='blue', linestyle='--', lw=2, 
+          label=f'Mean = {errors.mean():.4f}')
+ax.set_xlabel('Prediction Error', fontsize=11, fontweight='bold')
+ax.set_ylabel('Frequency', fontsize=11, fontweight='bold')
+ax.set_title(f'Error Distribution\nStd = {errors.std():.4f}', 
+            fontsize=12, fontweight='bold')
+ax.legend(fontsize=9)
+ax.grid(True, alpha=0.3)
+
+# 3. Error vs True Steering
+ax = axes[1, 0]
+scatter = ax.scatter(targets_np, np.abs(errors), c=true_categories,
+                    cmap='viridis', alpha=0.4, s=10, edgecolors='none')
+ax.axhline(0.05, color='green', linestyle='--', lw=2, label='0.05 threshold')
+ax.axhline(0.10, color='orange', linestyle='--', lw=2, label='0.10 threshold')
+ax.set_xlabel('True Steering', fontsize=11, fontweight='bold')
+ax.set_ylabel('Absolute Error', fontsize=11, fontweight='bold')
+ax.set_title('Absolute Error vs True Steering', fontsize=12, fontweight='bold')
+ax.legend(fontsize=9)
+ax.grid(True, alpha=0.3)
+cbar = plt.colorbar(scatter, ax=ax)
+cbar.set_label('True Category', fontsize=10)
+
+# 4. Cumulative Error Distribution
+ax = axes[1, 1]
+sorted_errors = np.sort(np.abs(errors))
+cumulative = np.arange(1, len(sorted_errors) + 1) / len(sorted_errors) * 100
+ax.plot(sorted_errors, cumulative, lw=2.5, color='darkblue')
+ax.axvline(0.05, color='green', linestyle='--', lw=2, label='±0.05')
+ax.axvline(0.10, color='orange', linestyle='--', lw=2, label='±0.10')
+ax.axvline(0.15, color='red', linestyle='--', lw=2, label='±0.15')
+ax.set_xlabel('Absolute Error', fontsize=11, fontweight='bold')
+ax.set_ylabel('Cumulative Percentage (%)', fontsize=11, fontweight='bold')
+ax.set_title('Cumulative Error Distribution', fontsize=12, fontweight='bold')
+ax.legend(fontsize=9)
+ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('output/regression_analysis.png', dpi=150, bbox_inches='tight')
+print("\n✓ Saved: output/regression_analysis.png")
+plt.show(block=False)
+plt.close()
+
+# ============================================================================
+# ERROR ANALYSIS BY CATEGORY
+# ============================================================================
+print("\n" + "=" * 80)
+print("ERROR ANALYSIS BY CATEGORY")
+print("=" * 80)
+
+print(f"\n{'Category':<15} {'Count':>8} {'MAE':>10} {'RMSE':>10} {'R²':>10}")
+print("-" * 57)
+
+for i, name in enumerate(category_names):
+    mask = true_categories == i
     if mask.sum() > 0:
-        mae = np.abs(preds_np[mask, 0] - targets_np[mask, 0]).mean()
-        rmse = np.sqrt(((preds_np[mask, 0] - targets_np[mask, 0])**2).mean())
-        r2 = r2_score(targets_np[mask, 0], preds_np[mask, 0])
-        print(f"{name:<20} {mask.sum():>8} {mae:>10.4f} {rmse:>10.4f} {r2:>10.4f}")
-
-# ============================================================================
-# DIRECTIONAL BIAS
-# ============================================================================
-print("\n" + "=" * 80)
-print("DIRECTIONAL BIAS ANALYSIS")
-print("=" * 80)
-
-left_mask = targets_np[:, 0] < -0.1
-right_mask = targets_np[:, 0] > 0.1
-
-if left_mask.sum() > 0 and right_mask.sum() > 0:
-    left_bias = (preds_np[left_mask, 0] - targets_np[left_mask, 0]).mean()
-    right_bias = (preds_np[right_mask, 0] - targets_np[right_mask, 0]).mean()
-    
-    print(f"\nLeft turn bias:  {left_bias:+.4f}")
-    print(f"Right turn bias: {right_bias:+.4f}")
-    
-    if abs(left_bias) < 0.03 and abs(right_bias) < 0.03:
-        print("✓ Excellent - No significant bias")
-    elif abs(left_bias) < 0.05 and abs(right_bias) < 0.05:
-        print("✓ Good - Minor bias")
-    else:
-        print("⚠️  WARNING: Significant bias detected!")
-
-# ============================================================================
-# SAMPLE PREDICTIONS
-# ============================================================================
-print("\n" + "=" * 80)
-print("SAMPLE PREDICTIONS")
-print("=" * 80)
-
-sample_indices = np.random.choice(len(df), size=5, replace=False)
-
-print(f"\n{'Image':<40} {'True':>8} {'Pred':>8} {'Error':>8}")
-print("-" * 72)
-
-for idx in sample_indices:
-    row = df.iloc[idx]
-    img_path = data_path / row['image'].replace('\\', '/')
-    
-    pred_result = learn.predict(PILImage.create(img_path))
-    pred_steer = float(pred_result[0][0])
-    true_steer = row['steer']
-    error = abs(pred_steer - true_steer)
-    
-    print(f"{row['image'][-35:]:<40} {true_steer:>+8.3f} {pred_steer:>+8.3f} {error:>8.3f}")
+        mae = np.abs(preds_np[mask] - targets_np[mask]).mean()
+        rmse = np.sqrt(((preds_np[mask] - targets_np[mask])**2).mean())
+        r2 = r2_score(targets_np[mask], preds_np[mask])
+        print(f"{name:<15} {mask.sum():>8} {mae:>10.4f} {rmse:>10.4f} {r2:>10.4f}")
 
 # ============================================================================
 # SAVE METRICS
 # ============================================================================
 print("\n" + "=" * 80)
-print("SAVING METRICS")
+print("SAVING COMPREHENSIVE METRICS")
 print("=" * 80)
 
 metrics_dict = {
-    'steering': {
+    'regression': {
         'mae': float(steer_mae_val),
         'rmse': float(steer_rmse_val),
         'r2_score': float(steer_r2_val),
         'pearson_correlation': float(steer_corr)
     },
-    'throttle': {'mae': float(throttle_mae_val)},
-    'brake': {'mae': float(brake_mae_val)},
+    'classification': {
+        'accuracy': float(classification_accuracy),
+        'confusion_matrix': cm.tolist(),
+        'roc_auc': {name: float(roc_auc[i]) for i, name in enumerate(category_names)},
+        'roc_auc_micro': float(roc_auc['micro']),
+        'pr_auc': {name: float(pr_auc[i]) for i, name in enumerate(category_names)},
+        'pr_auc_micro': float(pr_auc['micro'])
+    },
     'training': {
         'model': 'ResNet50',
-        'epochs_phase1': 8,
-        'epochs_phase2': 40,
-        'batch_size': 192,
-        'total_samples': len(df)
+        'output': 'steering_only',
+        'total_samples': len(df),
+        'validation_samples': len(preds_np),
+        'categories': category_names,
+        'straight_threshold': 0.05
     }
 }
 
-output_dir = Path('./output')
-output_dir.mkdir(exist_ok=True)
-
-metrics_file = output_dir / 'training_metrics.json'
+metrics_file = output_dir / 'comprehensive_metrics.json'
 with open(metrics_file, 'w') as f:
     json.dump(metrics_dict, f, indent=2)
 
@@ -505,7 +706,7 @@ print("\n" + "=" * 80)
 print("MODEL EXPORT")
 print("=" * 80)
 
-model_filename = output_dir / 'drive_model_ac_resnet50.pkl'
+model_filename = output_dir / 'steering_only_model.pkl'
 learn.export(model_filename)
 
 print(f"\n✓ Model saved: {model_filename}")
@@ -517,19 +718,33 @@ print("\n" + "=" * 80)
 print("TRAINING COMPLETE!")
 print("=" * 80)
 
-print(f"\n📊 FINAL METRICS:")
-print(f"  Steering MAE:     {steer_mae_val:.4f} {'✓' if steer_mae_val < 0.08 else '⚠️'}")
-print(f"  Steering R²:      {steer_r2_val:.4f} {'✓' if steer_r2_val > 0.85 else '⚠️'}")
+print(f"\n📊 REGRESSION METRICS:")
+print(f"  MAE:              {steer_mae_val:.4f}")
+print(f"  RMSE:             {steer_rmse_val:.4f}")
+print(f"  R² Score:         {steer_r2_val:.4f}")
+
+print(f"\n📊 CLASSIFICATION METRICS (5 Categories):")
+print(f"  Accuracy:         {classification_accuracy:.4f} ({classification_accuracy*100:.2f}%)")
+print(f"  ROC AUC (micro):  {roc_auc['micro']:.4f}")
+print(f"  PR AUC (micro):   {pr_auc['micro']:.4f}")
 
 print(f"\n📁 SAVED FILES:")
 print(f"  • {model_filename}")
 print(f"  • {metrics_file}")
+print(f"  • output/confusion_matrix.png")
+print(f"  • output/roc_curves.png")
+print(f"  • output/precision_recall_curves.png")
+print(f"  • output/regression_analysis.png")
+print(f"  • output/steering_categories.png")
+print(f"  • output/training_loss.png")
 
-print(f"\n🚗 NEXT STEPS:")
-print("  1. Review visualizations")
-print("  2. Test model on actual track")
-print("  3. If MAE > 0.08, collect more diverse data")
+print(f"\n🚗 MODEL SPECIFICATIONS:")
+print(f"  • Output: Single steering value [-1, 1]")
+print(f"  • Architecture: ResNet50 with single output neuron")
+print(f"  • Loss: Pure steering MSE with turn emphasis")
+print(f"  • Categories: 5 (Sharp Left, Left, Straight, Right, Sharp Right)")
+print(f"  • Category thresholds: -0.25, -0.05, 0.05, 0.25")
 
 print("\n" + "=" * 80)
-print("✓ Close all plot windows to exit")
+print("✓ All complete! Close plot windows when ready.")
 plt.show()
