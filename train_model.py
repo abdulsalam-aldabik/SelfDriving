@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Assetto Corsa Autonomous Driving - STEERING ONLY
-Pure steering regression model with 5-category comprehensive analysis
+Pure steering regression with fastai's built-in MSE loss
 """
 
 import warnings
@@ -98,7 +98,6 @@ print("\n" + "=" * 80)
 print("STEERING CATEGORIZATION (5 Classes)")
 print("=" * 80)
 
-# 5-category classification with balanced thresholds
 def categorize_steering(steer_value):
     """Convert continuous steering to 5 categories"""
     if steer_value < -0.25:
@@ -171,9 +170,9 @@ print("CREATING DATALOADERS (STEERING ONLY)")
 print("=" * 80)
 
 dblock = DataBlock(
-    blocks=(ImageBlock, RegressionBlock(n_out=1)),  # Single output for steering
+    blocks=(ImageBlock, RegressionBlock(n_out=1)),
     get_x=lambda row: data_path / row['image'].replace('\\', '/'),
-    get_y=lambda row: row['steer'],  # Only return steering
+    get_y=lambda row: row['steer'],
     splitter=RandomSplitter(valid_pct=0.2, seed=42),
     item_tfms=Resize(480),
     batch_tfms=[
@@ -199,36 +198,6 @@ print(f"\n✓ DataLoaders created")
 print(f"  Training batches: {len(dls.train)}")
 print(f"  Validation batches: {len(dls.valid)}")
 print(f"  Batch size: {dls.bs}")
-
-# ============================================================================
-# LOSS FUNCTION - PURE STEERING
-# ============================================================================
-
-class PureSteeringLoss(nn.Module):
-    """Pure steering loss with turn emphasis"""
-
-    def __init__(self, base_weight=1.0):
-        super().__init__()
-        self.base_weight = base_weight
-
-    def forward(self, pred, target):
-        # Ensure correct shapes
-        if pred.dim() == 2:
-            pred = pred.squeeze(1)
-        if target.dim() == 2:
-            target = target.squeeze(1)
-        
-        # Calculate error
-        error = pred - target
-        
-        # Turn magnitude emphasis (more weight on larger steering angles)
-        turn_magnitude = torch.abs(target)
-        turn_multiplier = 1.0 + 2.0 * turn_magnitude  # Max 3x weight
-        
-        # MSE loss with turn emphasis
-        loss = self.base_weight * turn_multiplier * (error ** 2)
-        
-        return loss.mean()
 
 # ============================================================================
 # METRICS - STEERING ONLY
@@ -272,22 +241,21 @@ def steering_accuracy_loose(pred, targ, threshold=0.15):
     return (torch.abs(pred - targ) < threshold).float().mean()
 
 # ============================================================================
-# MODEL CREATION
+# MODEL CREATION WITH FASTAI'S MSELossFlat
 # ============================================================================
 print("\n" + "=" * 80)
 print("MODEL CREATION (ResNet50 - STEERING ONLY)")
 print("=" * 80)
 
-# Create output directory
 output_dir = Path('./output')
 output_dir.mkdir(exist_ok=True)
 
-# Create learner for steering only
+# Use fastai's built-in MSELossFlat for regression
 learn = vision_learner(
     dls,
     resnet50,
-    n_out=1,  # Single output for steering
-    loss_func=PureSteeringLoss(base_weight=1.0),
+    n_out=1,
+    loss_func=MSELossFlat(),  # ✓ fastai built-in MSE loss
     metrics=[
         steering_mae,
         steering_rmse,
@@ -305,10 +273,53 @@ else:
 
 print("✓ Model: ResNet50")
 print("✓ Output: Steering ONLY (single value)")
-print("✓ Loss: Pure steering with turn emphasis")
+print("✓ Loss: MSELossFlat() [fastai built-in]")
 
 # ============================================================================
-# TRAINING
+# DATA INTEGRITY CHECKS
+# ============================================================================
+print("\n" + "=" * 80)
+print("CRITICAL DATA CHECKS")
+print("=" * 80)
+
+# Verify straight percentage
+straight_mask = df['steer'].abs() <= 0.05
+actual_straight_pct = straight_mask.sum() / len(df) * 100
+
+print(f"\n1. Straight percentage check:")
+print(f"   Actual: {actual_straight_pct:.2f}%")
+if actual_straight_pct > 20:
+    print(f"   ⚠️  CRITICAL: Still >20%! Data cleaning failed!")
+    print(f"   Action: Stop training, re-run cleaning.py")
+else:
+    print(f"   ✓ Acceptable")
+
+# Check data integrity
+print(f"\n2. Data integrity check:")
+print(f"   NaN values: {df['steer'].isna().sum()}")
+print(f"   Infinite values: {np.isinf(df['steer']).sum()}")
+print(f"   Out of range (|x|>1): {(df['steer'].abs() > 1).sum()}")
+
+if df['steer'].isna().sum() > 0 or np.isinf(df['steer']).sum() > 0:
+    print(f"   ⚠️  CRITICAL: Data is corrupted!")
+else:
+    print(f"   ✓ Data integrity OK")
+
+# Sample a batch and verify DataLoader
+print(f"\n3. DataLoader check:")
+xb, yb = dls.one_batch()
+print(f"   Batch shape: x={xb.shape}, y={yb.shape}")
+print(f"   Target range: [{yb.min():.4f}, {yb.max():.4f}]")
+print(f"   Target mean: {yb.mean():.4f}")
+print(f"   Target std: {yb.std():.4f}")
+
+if yb.mean().abs() > 0.15:
+    print(f"   ⚠️  WARNING: Target mean not near 0!")
+else:
+    print(f"   ✓ DataLoader OK")
+
+# ============================================================================
+# TRAINING WITH GRADIENT CLIPPING
 # ============================================================================
 print("\n" + "=" * 80)
 print("LEARNING RATE FINDER")
@@ -322,22 +333,26 @@ if lr_max > 0.01:
     print(f"\n⚠️  Suggested LR ({lr_max:.2e}) seems high, using conservative 5e-3")
     lr_max = 5e-3
 else:
-    print(f"\n✓ Suggested LR: {lr_max:.2e}")
+    print(f"\n✓ Using suggested LR: {lr_max:.2e}")
 
 plt.savefig('output/lr_finder.png', dpi=150, bbox_inches='tight')
 plt.show(block=False)
 plt.close()
 
 print("\n" + "=" * 80)
-print("TRAINING")
+print("TRAINING WITH GRADIENT CLIPPING")
 print("=" * 80)
 
+# Import gradient clipping callback
+from fastai.callback.training import GradientClip
+
 learn.fine_tune(
-    epochs=30,
+    epochs=15,
     base_lr=lr_max,
-    freeze_epochs=8,
-    wd=0.02,
-    pct_start=0.3
+    freeze_epochs=3,  # Increased from 8
+    wd=0.01,  # Reduced from 0.02
+    pct_start=0.3,
+    cbs=[GradientClip(1.0)]  # Prevent gradient explosions
 )
 
 # Save training history
@@ -356,7 +371,7 @@ print("GENERATING PREDICTIONS")
 print("=" * 80)
 
 preds, targets = learn.get_preds()
-preds_np = preds.cpu().numpy().squeeze()  # Remove extra dimensions
+preds_np = preds.cpu().numpy().squeeze()
 targets_np = targets.cpu().numpy().squeeze()
 
 # Convert predictions to categories
@@ -440,31 +455,29 @@ plt.show(block=False)
 plt.close()
 
 # ============================================================================
-# ROC CURVES (One-vs-Rest for each category)
+# ROC CURVES
 # ============================================================================
 print("\n" + "=" * 80)
 print("ROC CURVES (One-vs-Rest)")
 print("=" * 80)
 
-# Convert categories to one-hot encoding for ROC analysis
 from sklearn.preprocessing import label_binarize
 true_categories_bin = label_binarize(true_categories, classes=range(5))
 
-# Calculate "soft" probabilities based on regression predictions
+# Calculate soft probabilities
 category_centers = np.array([-0.5, -0.15, 0.0, 0.15, 0.5])
 
 def calculate_soft_probabilities(pred_values, centers):
-    """Convert regression predictions to pseudo-probabilities for each class"""
     pred_values = np.clip(pred_values, -1, 1)
     distances = np.abs(pred_values[:, np.newaxis] - centers[np.newaxis, :])
-    sigma = 0.15  # Bandwidth parameter
+    sigma = 0.15
     weights = np.exp(-distances**2 / (2 * sigma**2))
     probabilities = weights / weights.sum(axis=1, keepdims=True)
     return probabilities
 
 pred_probabilities = calculate_soft_probabilities(preds_np, category_centers)
 
-# Calculate ROC curve and AUC for each class
+# Calculate ROC curve and AUC
 fpr = dict()
 tpr = dict()
 roc_auc = dict()
@@ -473,7 +486,6 @@ for i in range(5):
     fpr[i], tpr[i], _ = roc_curve(true_categories_bin[:, i], pred_probabilities[:, i])
     roc_auc[i] = auc(fpr[i], tpr[i])
 
-# Compute micro-average ROC curve and AUC
 fpr["micro"], tpr["micro"], _ = roc_curve(true_categories_bin.ravel(), 
                                            pred_probabilities.ravel())
 roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
@@ -481,17 +493,14 @@ roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
 # Plot ROC curves
 fig, ax = plt.subplots(figsize=(10, 8))
 
-# Plot micro-average
 ax.plot(fpr["micro"], tpr["micro"],
         label=f'Micro-average (AUC = {roc_auc["micro"]:.4f})',
         color='deeppink', linestyle=':', linewidth=3)
 
-# Plot each class
 for i, (name, color) in enumerate(zip(category_names, category_colors)):
     ax.plot(fpr[i], tpr[i], color=color, lw=2.5,
             label=f'{name} (AUC = {roc_auc[i]:.4f})')
 
-# Plot diagonal
 ax.plot([0, 1], [0, 1], 'k--', lw=2, label='Random Classifier')
 
 ax.set_xlim([0.0, 1.0])
@@ -506,13 +515,6 @@ ax.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.savefig('output/roc_curves.png', dpi=150, bbox_inches='tight')
 print("\n✓ Saved: output/roc_curves.png")
-
-# Print AUC scores
-print("\nAUC Scores:")
-print(f"  Micro-average: {roc_auc['micro']:.4f}")
-for i, name in enumerate(category_names):
-    print(f"  {name:15s}: {roc_auc[i]:.4f}")
-
 plt.show(block=False)
 plt.close()
 
@@ -532,20 +534,17 @@ for i in range(5):
         true_categories_bin[:, i], pred_probabilities[:, i])
     pr_auc[i] = auc(recall[i], precision[i])
 
-# Micro-average
 precision["micro"], recall["micro"], _ = precision_recall_curve(
     true_categories_bin.ravel(), pred_probabilities.ravel())
 pr_auc["micro"] = auc(recall["micro"], precision["micro"])
 
-# Plot Precision-Recall curves
+# Plot
 fig, ax = plt.subplots(figsize=(10, 8))
 
-# Plot micro-average
 ax.plot(recall["micro"], precision["micro"],
         label=f'Micro-average (AUC = {pr_auc["micro"]:.4f})',
         color='deeppink', linestyle=':', linewidth=3)
 
-# Plot each class
 for i, (name, color) in enumerate(zip(category_names, category_colors)):
     ax.plot(recall[i], precision[i], color=color, lw=2.5,
             label=f'{name} (AUC = {pr_auc[i]:.4f})')
@@ -562,13 +561,6 @@ ax.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.savefig('output/precision_recall_curves.png', dpi=150, bbox_inches='tight')
 print("\n✓ Saved: output/precision_recall_curves.png")
-
-# Print PR AUC scores
-print("\nPrecision-Recall AUC Scores:")
-print(f"  Micro-average: {pr_auc['micro']:.4f}")
-for i, name in enumerate(category_names):
-    print(f"  {name:15s}: {pr_auc[i]:.4f}")
-
 plt.show(block=False)
 plt.close()
 
@@ -686,6 +678,7 @@ metrics_dict = {
     'training': {
         'model': 'ResNet50',
         'output': 'steering_only',
+        'loss_function': 'MSELossFlat',
         'total_samples': len(df),
         'validation_samples': len(preds_np),
         'categories': category_names,
@@ -741,9 +734,9 @@ print(f"  • output/training_loss.png")
 print(f"\n🚗 MODEL SPECIFICATIONS:")
 print(f"  • Output: Single steering value [-1, 1]")
 print(f"  • Architecture: ResNet50 with single output neuron")
-print(f"  • Loss: Pure steering MSE with turn emphasis")
+print(f"  • Loss: MSELossFlat() [fastai built-in]")
+print(f"  • Gradient clipping: 1.0")
 print(f"  • Categories: 5 (Sharp Left, Left, Straight, Right, Sharp Right)")
-print(f"  • Category thresholds: -0.25, -0.05, 0.05, 0.25")
 
 print("\n" + "=" * 80)
 print("✓ All complete! Close plot windows when ready.")
